@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .adapters.factory import build_adapter
 from .config import PROJECT_ROOT, load_config, resolve_project_path
+from .database import DatabaseStore
 from .navigation import NavigationService
 from .sensors import SensorService
 from .state import StateHub
@@ -17,7 +18,8 @@ from .vision import VisionService
 
 
 config = load_config()
-state = StateHub(config)
+database = DatabaseStore(config.database)
+state = StateHub(config, database)
 adapter = build_adapter(config)
 navigation = NavigationService(config, state, adapter)
 sensors = SensorService(config, state)
@@ -40,6 +42,7 @@ if assets_dir.exists():
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    database.init_schema()
     navigation.start_background()
     sensors.start_background()
     vision.start_background()
@@ -56,9 +59,44 @@ async def index() -> FileResponse:
     return FileResponse(frontend_dir / "index.html")
 
 
+@app.get("/dashboard")
+async def dashboard_page() -> FileResponse:
+    return FileResponse(frontend_dir / "index.html")
+
+
+@app.get("/control")
+async def control_page() -> FileResponse:
+    return FileResponse(frontend_dir / "control.html")
+
+
+@app.get("/navigation")
+async def navigation_page() -> FileResponse:
+    return FileResponse(frontend_dir / "navigation.html")
+
+
+@app.get("/vision")
+async def vision_page() -> FileResponse:
+    return FileResponse(frontend_dir / "vision.html")
+
+
+@app.get("/alarms")
+async def alarms_page() -> FileResponse:
+    return FileResponse(frontend_dir / "alarms.html")
+
+
+@app.get("/reports")
+async def reports_page() -> FileResponse:
+    return FileResponse(frontend_dir / "reports.html")
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     return {"ok": True, "adapter": adapter.name, "project_root": str(PROJECT_ROOT)}
+
+
+@app.get("/api/db/health")
+async def db_health() -> dict[str, Any]:
+    return database.health()
 
 
 @app.get("/api/snapshot")
@@ -175,4 +213,3 @@ async def handle_ws_message(message: dict[str, Any]) -> None:
             await alarm_confirm(str(alarm_id), payload)
     elif msg_type == "ping":
         await state.broadcast("pong", {"ok": True})
-

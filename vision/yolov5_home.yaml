@@ -1,0 +1,13 @@
+train: ./datasets/home/train/images
+val: ./datasets/home/val/images
+test: ./datasets/home/test/images
+
+nc: 6
+names:
+  - person
+  - pet
+  - child
+  - door_open
+  - window_open
+  - dangerous_object
+

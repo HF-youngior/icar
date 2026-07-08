@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>遥控 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css" />
+  </head>
+  <body data-page="control">
+    <div class="app-shell">
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard"><span class="brand-mark">IC</span><span><strong>HomeBot</strong><small>智能家居管家机器人</small></span></a>
+        <nav class="rail-nav">
+          <a href="/dashboard">总览</a><a class="active" href="/control">遥控</a><a href="/navigation">导航</a><a href="/vision">视觉</a><a href="/alarms">告警</a><a href="/reports">报告</a>
+        </nav>
+        <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
+      </aside>
+      <main class="page">
+        <header class="page-head">
+          <div><p class="eyebrow">Manual Drive</p><h1>小车遥控</h1><p class="subhead">用于现场低速联调，急停优先级最高。</p></div>
+          <div class="connect-strip"><input id="serverInput" value="ws://127.0.0.1:8000/ws" /><button class="neon-btn primary" id="connectBtn">连接</button><button class="neon-btn ghost" id="disconnectBtn">断开</button></div>
+        </header>
+        <section class="control-layout">
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>运动控制</h2><p id="connectionState">离线</p></div>
+            <div class="speed-row">
+              <label for="speedRange">速度</label>
+              <input id="speedRange" type="range" min="0.08" max="0.32" value="0.16" step="0.02" />
+              <strong id="speedValue">0.16 m/s</strong>
+            </div>
+            <div class="neon-dpad">
+              <button data-dir="forward">↑</button>
+              <button data-dir="left">←</button>
+              <button data-dir="stop" class="stop">■</button>
+              <button data-dir="right">→</button>
+              <button data-dir="backward">↓</button>
+            </div>
+            <button class="neon-btn danger wide" id="estopBtn">急停</button>
+          </article>
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>小车状态</h2><p>来自后端统一状态中心</p></div>
+            <div class="status-list">
+              <div><span>模式</span><strong id="robotMode">--</strong></div>
+              <div><span>目标</span><strong id="robotTarget">无</strong></div>
+              <div><span>电量</span><strong id="batteryText">--%</strong></div>
+              <div><span>进度</span><strong id="navProgressText">0%</strong></div>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/js/app.js"></script>
+  </body>
+</html>

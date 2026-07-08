@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, read_json_file, resolve_project_path
+from .database import DatabaseStore, NullDatabaseStore
 
 
 def now_text() -> str:
@@ -14,8 +15,9 @@ def now_text() -> str:
 
 
 class StateHub:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, database: DatabaseStore | None = None) -> None:
         self.config = config
+        self.database = database or NullDatabaseStore()
         self.clients: set[Any] = set()
         self.points: list[dict[str, Any]] = read_json_file(config.points_file, [])
         self.routes: list[dict[str, Any]] = read_json_file(config.routes_file, [])
@@ -104,12 +106,14 @@ class StateHub:
         current.update(data)
         current["updated_at"] = now_text()
         self.sensors[name] = current
+        self.database.save_sensor_sample(current)
         await self.broadcast("sensor_update", current)
 
     async def add_vision_event(self, event: dict[str, Any]) -> None:
         event = {"id": f"vis-{uuid.uuid4().hex[:8]}", "timestamp": now_text(), **event}
         self.vision.insert(0, event)
         self.vision = self.vision[:50]
+        self.database.save_vision_event(event)
         await self.broadcast("vision_event", event)
 
     async def add_alarm(self, alarm_type: str, level: str, message: str, source: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -125,6 +129,7 @@ class StateHub:
         }
         self.alarms.insert(0, alarm)
         self.alarms = self.alarms[:100]
+        self.database.save_alarm(alarm)
         await self.broadcast("alarm_event", alarm)
         return alarm
 
@@ -134,6 +139,7 @@ class StateHub:
                 alarm["status"] = "confirmed"
                 alarm["confirmed_by"] = operator
                 alarm["confirmed_at"] = now_text()
+                self.database.save_alarm(alarm)
                 await self.broadcast("alarm_update", alarm)
                 return alarm
         return None
@@ -149,6 +155,7 @@ class StateHub:
         self.reports.insert(0, report)
         self.reports = self.reports[:50]
         await self._persist_report(report)
+        self.database.save_report(report)
         await self.broadcast("report_created", report)
         return report
 
@@ -163,4 +170,3 @@ class StateHub:
 
     def route_by_id(self, route_id: str) -> dict[str, Any] | None:
         return next((route for route in self.routes if route.get("id") == route_id), None)
-

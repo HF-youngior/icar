@@ -23,7 +23,7 @@ class ServerConfig:
 class CarConfig:
     adapter: str = "simulated"
     host: str = "172.20.10.3"
-    port: int = 8888
+    port: int = 6000
     command_timeout_sec: float = 2.0
     cmd_vel_topic: str = "/cmd_vel"
     nav_goal_topic: str = "/goal_pose"
@@ -39,9 +39,22 @@ class CarConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    enabled: bool = False
+    host: str = ""
+    port: int = 3306
+    user: str = "root"
+    password: str = ""
+    database: str = "icar"
+    charset: str = "utf8mb4"
+    connect_timeout_sec: int = 5
+
+
+@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     car: CarConfig = field(default_factory=CarConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
     points_file: str = "config/points.json"
     routes_file: str = "config/routes.json"
     reports_dir: str = "data/reports"
@@ -64,6 +77,7 @@ def _dataclass_to_dict(config: AppConfig) -> dict[str, Any]:
     return {
         "server": vars(config.server),
         "car": vars(config.car),
+        "database": vars(config.database),
         "points_file": config.points_file,
         "routes_file": config.routes_file,
         "reports_dir": config.reports_dir,
@@ -77,9 +91,11 @@ def _dataclass_to_dict(config: AppConfig) -> dict[str, Any]:
 def _from_dict(data: dict[str, Any]) -> AppConfig:
     server = ServerConfig(**data.get("server", {}))
     car = CarConfig(**data.get("car", {}))
+    database = DatabaseConfig(**data.get("database", {}))
     return AppConfig(
         server=server,
         car=car,
+        database=database,
         points_file=data.get("points_file", "config/points.json"),
         routes_file=data.get("routes_file", "config/routes.json"),
         reports_dir=data.get("reports_dir", "data/reports"),
@@ -102,6 +118,13 @@ def load_config() -> AppConfig:
     default["car"]["port"] = int(os.getenv("ICAR_CAR_PORT", default["car"]["port"]))
     default["server"]["host"] = os.getenv("ICAR_HOST", default["server"]["host"])
     default["server"]["port"] = int(os.getenv("ICAR_PORT", default["server"]["port"]))
+    if os.getenv("ICAR_DB_HOST"):
+        default["database"]["enabled"] = True
+        default["database"]["host"] = os.getenv("ICAR_DB_HOST", default["database"]["host"])
+        default["database"]["port"] = int(os.getenv("ICAR_DB_PORT", default["database"]["port"]))
+        default["database"]["user"] = os.getenv("ICAR_DB_USER", default["database"]["user"])
+        default["database"]["password"] = os.getenv("ICAR_DB_PASSWORD", default["database"]["password"])
+        default["database"]["database"] = os.getenv("ICAR_DB_NAME", default["database"]["database"])
     return _from_dict(default)
 
 

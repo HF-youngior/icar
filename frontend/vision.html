@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>视觉 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css" />
+  </head>
+  <body data-page="vision">
+    <div class="app-shell">
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard"><span class="brand-mark">IC</span><span><strong>HomeBot</strong><small>智能家居管家机器人</small></span></a>
+        <nav class="rail-nav">
+          <a href="/dashboard">总览</a><a href="/control">遥控</a><a href="/navigation">导航</a><a class="active" href="/vision">视觉</a><a href="/alarms">告警</a><a href="/reports">报告</a>
+        </nav>
+        <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
+      </aside>
+      <main class="page">
+        <header class="page-head">
+          <div><p class="eyebrow">YOLO / OpenCV</p><h1>视觉识别</h1><p class="subhead" id="visionSummary">等待检测结果</p></div>
+          <div class="connect-strip"><input id="serverInput" value="ws://127.0.0.1:8000/ws" /><button class="neon-btn primary" id="connectBtn">连接</button><button class="neon-btn ghost" id="disconnectBtn">断开</button></div>
+        </header>
+        <section class="vision-layout">
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>检测画面</h2><p>当前为模拟图，后续可替换为 Jetson 相机流</p></div>
+            <div class="video-frame"><img id="visionImage" alt="视觉检测画面" src="/assets/sample-detection.svg" /></div>
+            <button class="neon-btn primary wide" id="detectBtn">检测一次</button>
+          </article>
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>检测事件</h2><p>类别、置信度、时间戳</p></div>
+            <div class="timeline" id="visionList"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/js/app.js"></script>
+  </body>
+</html>

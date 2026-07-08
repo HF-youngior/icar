@@ -3,154 +3,86 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>智能家居管家机器人</title>
+    <title>总览 | 智能家居管家机器人</title>
     <link rel="stylesheet" href="/assets/css/styles.css" />
   </head>
-  <body>
+  <body data-page="dashboard">
     <div class="app-shell">
-      <aside class="side-rail">
-        <div class="brand-block">
-          <div class="brand-mark">IC</div>
-          <div>
-            <div class="brand-name">HomeBot</div>
-            <div class="brand-sub">智能家居管家机器人</div>
-          </div>
-        </div>
-        <nav class="nav-list" aria-label="主导航">
-          <a class="active" href="#dashboard">总览</a>
-          <a href="#control">控制</a>
-          <a href="#navigation">导航</a>
-          <a href="#vision">视觉</a>
-          <a href="#reports">报告</a>
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard">
+          <span class="brand-mark">IC</span>
+          <span><strong>HomeBot</strong><small>智能家居管家机器人</small></span>
+        </a>
+        <nav class="rail-nav">
+          <a class="active" href="/dashboard">总览</a>
+          <a href="/control">遥控</a>
+          <a href="/navigation">导航</a>
+          <a href="/vision">视觉</a>
+          <a href="/alarms">告警</a>
+          <a href="/reports">报告</a>
         </nav>
-        <div class="rail-status">
-          <span class="status-dot" id="railDot"></span>
-          <span id="railStatus">未连接</span>
+        <div class="rail-card">
+          <span class="pulse-dot" id="railDot"></span>
+          <span id="railStatus">离线</span>
         </div>
       </aside>
 
-      <main class="workspace">
-        <header class="topbar">
+      <main class="page">
+        <header class="page-head">
           <div>
-            <h1>智能家居管家机器人</h1>
-            <p>Web 控制台 · ROS2/Jetson 桥接 · 家庭导航与巡逻</p>
+            <p class="eyebrow">Live Mission Center</p>
+            <h1>家庭管家总览</h1>
+            <p class="subhead">实时查看小车在线状态、导航任务、家庭环境数据和最近异常。</p>
           </div>
-          <div class="connection-box">
-            <label>
-              服务地址
-              <input id="serverInput" value="ws://127.0.0.1:8000/ws" />
-            </label>
-            <button class="primary" id="connectBtn">连接</button>
-            <button id="disconnectBtn">断开</button>
+          <div class="connect-strip">
+            <input id="serverInput" value="ws://127.0.0.1:8000/ws" aria-label="WebSocket 服务地址" />
+            <button class="neon-btn primary" id="connectBtn">连接</button>
+            <button class="neon-btn ghost" id="disconnectBtn">断开</button>
           </div>
         </header>
 
-        <section class="status-strip" id="dashboard">
-          <article>
+        <section class="hero-grid">
+          <article class="hero-card">
             <span>连接状态</span>
             <strong id="connectionState">离线</strong>
+            <small id="adapterText">adapter --</small>
           </article>
-          <article>
+          <article class="hero-card">
             <span>运行模式</span>
-            <strong id="robotMode">standby</strong>
+            <strong id="robotMode">--</strong>
+            <small id="robotTarget">目标：无</small>
           </article>
-          <article>
-            <span>当前目标</span>
-            <strong id="robotTarget">无</strong>
-          </article>
-          <article>
+          <article class="hero-card">
             <span>电量</span>
             <strong id="batteryText">--%</strong>
+            <small>模拟/真车统一状态</small>
+          </article>
+          <article class="hero-card">
+            <span>导航进度</span>
+            <strong id="navProgressText">0%</strong>
+            <small id="navMessage">等待任务</small>
           </article>
         </section>
 
-        <section class="main-grid">
-          <section class="panel control-panel" id="control">
-            <div class="panel-head">
-              <div>
-                <h2>手动控制</h2>
-                <p>低速优先，适合室内联调</p>
-              </div>
-              <button class="danger" id="estopBtn">急停</button>
-            </div>
-            <div class="speed-row">
-              <label>速度档位</label>
-              <input id="speedRange" type="range" min="0.08" max="0.32" value="0.16" step="0.02" />
-              <span id="speedValue">0.16 m/s</span>
-            </div>
-            <div class="dpad">
-              <button data-dir="forward" aria-label="前进">↑</button>
-              <button data-dir="left" aria-label="左转">←</button>
-              <button data-dir="stop" class="stop" aria-label="停止">■</button>
-              <button data-dir="right" aria-label="右转">→</button>
-              <button data-dir="backward" aria-label="后退">↓</button>
-            </div>
-          </section>
-
-          <section class="panel map-panel" id="navigation">
-            <div class="panel-head">
-              <div>
-                <h2>房间导航</h2>
-                <p id="navMessage">等待任务</p>
-              </div>
-              <button id="stopTaskBtn">停止任务</button>
-            </div>
-            <canvas id="homeMap" width="680" height="420"></canvas>
-            <div class="progress-wrap">
-              <div class="progress-bar"><span id="navProgress"></span></div>
-              <strong id="navProgressText">0%</strong>
-            </div>
-            <div class="point-list" id="pointList"></div>
-            <div class="route-list" id="routeList"></div>
-          </section>
-
-          <section class="panel vision-panel" id="vision">
-            <div class="panel-head">
-              <div>
-                <h2>视觉识别</h2>
-                <p id="visionSummary">等待检测结果</p>
-              </div>
-              <button id="detectBtn">检测一次</button>
-            </div>
-            <div class="video-frame">
-              <img id="visionImage" alt="视觉检测画面" src="/assets/sample-detection.svg" />
-            </div>
-            <div class="event-list" id="visionList"></div>
-          </section>
-
-          <section class="panel sensor-panel">
-            <div class="panel-head">
-              <div>
-                <h2>环境传感器</h2>
-                <p>温湿度、光照、气体与空气质量</p>
-              </div>
+        <section class="two-col">
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>环境传感器</h2>
+              <p>温湿度、光照、气体与空气质量</p>
             </div>
             <div class="sensor-grid" id="sensorGrid"></div>
-          </section>
+          </article>
 
-          <section class="panel alarm-panel">
-            <div class="panel-head">
-              <div>
-                <h2>告警事件</h2>
-                <p id="alarmSummary">暂无告警</p>
-              </div>
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>最近事件</h2>
+              <p>视觉识别、告警和巡逻报告</p>
             </div>
-            <div class="alarm-list" id="alarmList"></div>
-          </section>
-
-          <section class="panel report-panel" id="reports">
-            <div class="panel-head">
-              <div>
-                <h2>巡逻报告</h2>
-                <p>导航、告警和采集记录</p>
-              </div>
-            </div>
-            <div class="report-list" id="reportList"></div>
-          </section>
+            <div class="timeline" id="dashboardTimeline"></div>
+          </article>
         </section>
       </main>
     </div>
     <script src="/assets/js/app.js"></script>
   </body>
 </html>
-

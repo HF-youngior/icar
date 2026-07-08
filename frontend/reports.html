@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>报告 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css" />
+  </head>
+  <body data-page="reports">
+    <div class="app-shell">
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard"><span class="brand-mark">IC</span><span><strong>HomeBot</strong><small>智能家居管家机器人</small></span></a>
+        <nav class="rail-nav">
+          <a href="/dashboard">总览</a><a href="/control">遥控</a><a href="/navigation">导航</a><a href="/vision">视觉</a><a href="/alarms">告警</a><a class="active" href="/reports">报告</a>
+        </nav>
+        <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
+      </aside>
+      <main class="page">
+        <header class="page-head">
+          <div><p class="eyebrow">Mission Logs</p><h1>巡逻报告</h1><p class="subhead">导航到达、巡逻完成和异常记录。</p></div>
+          <div class="connect-strip"><input id="serverInput" value="ws://127.0.0.1:8000/ws" /><button class="neon-btn primary" id="connectBtn">连接</button><button class="neon-btn ghost" id="disconnectBtn">断开</button></div>
+        </header>
+        <section class="panel glow-panel">
+          <div class="panel-title"><h2>报告记录</h2><p>保存在后端 data/reports 目录</p></div>
+          <div class="report-grid" id="reportList"></div>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/js/app.js"></script>
+  </body>
+</html>

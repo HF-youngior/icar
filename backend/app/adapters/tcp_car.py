@@ -25,10 +25,7 @@ class TcpCarAdapter(CarAdapter):
         return None
 
     async def _send(self, key: str, **values: Any) -> dict[str, Any]:
-        template = self.config.command_map.get(key)
-        if not template:
-            raise ValueError(f"No TCP command template for {key}")
-        payload = template.format(**values).encode("utf-8")
+        payload = self._command_payload(key).encode("utf-8")
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(self.config.host, self.config.port),
             timeout=self.config.command_timeout_sec,
@@ -38,6 +35,30 @@ class TcpCarAdapter(CarAdapter):
         writer.close()
         await writer.wait_closed()
         return {"ok": True, "adapter": self.name, "command": key, "bytes": len(payload)}
+
+    def _command_payload(self, key: str) -> str:
+        direction_map = {
+            "stop": 0,
+            "forward": 1,
+            "backward": 2,
+            "left": 5,
+            "right": 6,
+            "emergency_stop": 7,
+        }
+        if key not in direction_map:
+            raise ValueError(f"Unsupported TCP command: {key}")
+        return self._encode_frame("15", self._hex(direction_map[key]))
+
+    def _encode_frame(self, command: str, info: str = "") -> str:
+        size = self._hex(len(info) + 2)
+        body = f"01{command}{size}{info}"
+        checksum = 0
+        for index in range(0, len(body), 2):
+            checksum = (checksum + int(body[index:index + 2], 16)) % 256
+        return f"${body}{self._hex(checksum)}#"
+
+    def _hex(self, value: int, width: int = 2) -> str:
+        return f"{value:0{width}X}"
 
     async def manual_control(self, direction: str, speed: float) -> dict[str, Any]:
         return await self._send(direction, speed=speed)
@@ -50,4 +71,3 @@ class TcpCarAdapter(CarAdapter):
 
     async def send_navigation_goal(self, point: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("TCP navigation needs the car protocol from the course material.")
-
