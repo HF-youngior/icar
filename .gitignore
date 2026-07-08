@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .env
+.env.ps1
 data/reports/*.json
 data/*.log
 data/logs/*.log

@@ -1,6 +1,10 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
+$LocalEnvPath = Join-Path $ProjectRoot ".env.ps1"
+if (Test-Path $LocalEnvPath) {
+    . $LocalEnvPath
+}
 $BackendPath = Join-Path $ProjectRoot "backend"
 $VendorPath = Join-Path $BackendPath ".vendor"
 $env:PYTHONPATH = "$VendorPath;$BackendPath"
