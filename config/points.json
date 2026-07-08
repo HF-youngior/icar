@@ -1,0 +1,43 @@
+[
+  {
+    "id": "living_room",
+    "name": "客厅",
+    "type": "room",
+    "enabled": true,
+    "pose": {"x": 1.2, "y": 1.0, "theta": 0.0},
+    "description": "演示起点和家庭巡逻主区域"
+  },
+  {
+    "id": "kitchen",
+    "name": "厨房",
+    "type": "room",
+    "enabled": true,
+    "pose": {"x": 4.6, "y": 1.2, "theta": 1.57},
+    "description": "可燃气体、烟雾和 PM2.5 重点检测点"
+  },
+  {
+    "id": "bedroom",
+    "name": "卧室",
+    "type": "room",
+    "enabled": true,
+    "pose": {"x": 4.4, "y": 3.7, "theta": 3.14},
+    "description": "老人/儿童看护与温湿度检测点"
+  },
+  {
+    "id": "corridor",
+    "name": "走廊",
+    "type": "passage",
+    "enabled": true,
+    "pose": {"x": 2.6, "y": 2.4, "theta": 0.0},
+    "description": "夜间巡逻和异常靠近检测区域"
+  },
+  {
+    "id": "door",
+    "name": "门口",
+    "type": "security",
+    "enabled": true,
+    "pose": {"x": 0.7, "y": 3.8, "theta": -1.57},
+    "description": "门窗状态和安防巡逻点"
+  }
+]
+

@@ -1,0 +1,16 @@
+.venv/
+backend/.vendor/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+data/reports/*.json
+data/logs/*.log
+data/captures/*
+!data/captures/.gitkeep
+node_modules/
+dist/
+.DS_Store
+Thumbs.db

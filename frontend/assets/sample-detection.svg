@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#18211f"/>
+  <rect x="60" y="54" width="840" height="430" rx="8" fill="#eef3ec"/>
+  <path d="M120 420 L840 420 L840 460 L120 460 Z" fill="#d9e0d6"/>
+  <rect x="150" y="130" width="210" height="250" rx="8" fill="#ffffff" stroke="#b8c3b5"/>
+  <rect x="430" y="112" width="300" height="268" rx="8" fill="#f8faf6" stroke="#b8c3b5"/>
+  <rect x="490" y="165" width="86" height="176" rx="42" fill="#2e6f5e"/>
+  <circle cx="533" cy="132" r="34" fill="#2e6f5e"/>
+  <rect x="466" y="106" width="140" height="248" fill="none" stroke="#c5523a" stroke-width="7"/>
+  <rect x="466" y="76" width="178" height="28" rx="6" fill="#c5523a"/>
+  <text x="482" y="96" font-family="Arial, sans-serif" font-size="18" fill="#fff">person 0.86</text>
+  <circle cx="770" cy="366" r="38" fill="#d7a443"/>
+  <rect x="715" y="340" width="130" height="48" rx="24" fill="#d7a443"/>
+  <rect x="700" y="315" width="160" height="92" fill="none" stroke="#2f6fb0" stroke-width="6"/>
+  <rect x="700" y="285" width="122" height="28" rx="6" fill="#2f6fb0"/>
+  <text x="716" y="305" font-family="Arial, sans-serif" font-size="18" fill="#fff">cat 0.78</text>
+</svg>
+

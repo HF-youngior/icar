@@ -1,0 +1,17 @@
+[
+  {
+    "id": "night_watch",
+    "name": "夜间警卫",
+    "points": ["living_room", "corridor", "door", "kitchen"],
+    "speed": 0.14,
+    "description": "低速巡逻客厅、走廊、门口和厨房，重点检测人员靠近和燃气异常"
+  },
+  {
+    "id": "air_quality",
+    "name": "全屋空气采集",
+    "points": ["living_room", "bedroom", "kitchen"],
+    "speed": 0.16,
+    "description": "在主要房间采集温湿度、PM2.5、光照和可燃气体数据"
+  }
+]
+

@@ -1,0 +1,31 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "frontend_dir": "frontend"
+  },
+  "car": {
+    "adapter": "simulated",
+    "host": "172.20.10.3",
+    "port": 8888,
+    "command_timeout_sec": 2.0,
+    "cmd_vel_topic": "/cmd_vel",
+    "nav_goal_topic": "/goal_pose",
+    "nav_action": "/navigate_to_pose",
+    "command_map": {
+      "forward": "FORWARD {speed}\n",
+      "backward": "BACKWARD {speed}\n",
+      "left": "LEFT {speed}\n",
+      "right": "RIGHT {speed}\n",
+      "stop": "STOP\n",
+      "emergency_stop": "ESTOP\n"
+    }
+  },
+  "points_file": "config/points.json",
+  "routes_file": "config/routes.json",
+  "reports_dir": "data/reports",
+  "captures_dir": "data/captures",
+  "sensor_tick_sec": 1.5,
+  "navigation_tick_sec": 0.8,
+  "vision_tick_sec": 5.0
+}
