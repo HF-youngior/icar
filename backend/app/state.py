@@ -30,6 +30,7 @@ class StateHub:
             "pose": {"x": 1.2, "y": 1.2, "theta": 0},
             "target": None,
             "last_command": "none",
+            "last_error": None,
             "updated_at": now_text(),
         }
         self.navigation: dict[str, Any] = {

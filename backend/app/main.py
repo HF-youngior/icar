@@ -99,6 +99,18 @@ async def db_health() -> dict[str, Any]:
     return database.health()
 
 
+@app.post("/api/car/reconnect")
+async def car_reconnect() -> dict[str, Any]:
+    try:
+        await adapter.connect()
+        await state.update_robot(connected=True, adapter=adapter.name, mode="standby", last_error=None)
+        return {"ok": True, "adapter": adapter.name}
+    except Exception as exc:
+        await state.update_robot(connected=False, adapter=adapter.name, mode="offline", last_error=str(exc))
+        await state.add_alarm("connection", "warning", f"小车连接失败：{exc}", "backend")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/snapshot")
 async def snapshot() -> dict[str, Any]:
     return state.snapshot()
@@ -127,9 +139,16 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Unsupported direction")
     try:
         result = await adapter.stop() if direction == "stop" else await adapter.manual_control(direction, speed)
-        await state.update_robot(mode="manual" if direction != "stop" else "standby", speed=0 if direction == "stop" else speed, last_command=direction)
+        await state.update_robot(
+            connected=True,
+            mode="manual" if direction != "stop" else "standby",
+            speed=0 if direction == "stop" else speed,
+            last_command=direction,
+            last_error=None,
+        )
         return result
     except Exception as exc:
+        await state.update_robot(connected=False, mode="offline", last_error=str(exc))
         await state.add_alarm("manual_control", "warning", f"控制指令失败：{exc}", "backend")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

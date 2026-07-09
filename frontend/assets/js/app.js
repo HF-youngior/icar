@@ -121,6 +121,7 @@ function renderCommon() {
   setText("adapterText", `adapter ${robot.adapter || "--"}`);
   setText("robotMode", robot.mode || "--");
   setText("robotTarget", `目标：${robot.target || "无"}`);
+  setText("robotError", robot.last_error || "无");
   setText("batteryText", robot.battery ? `${robot.battery}%` : "--%");
   setText("navMessage", navigation.message || "等待任务");
   const progress = Math.round((navigation.progress || 0) * 100);
@@ -358,6 +359,7 @@ function bindEvents() {
   $("connectBtn")?.addEventListener("click", connect);
   $("disconnectBtn")?.addEventListener("click", disconnect);
   $("estopBtn")?.addEventListener("click", () => send("emergency_stop", { reason: "web" }));
+  $("reconnectCarBtn")?.addEventListener("click", reconnectCar);
   $("stopTaskBtn")?.addEventListener("click", () => send("task_stop", {}));
   $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
   $("speedRange")?.addEventListener("input", () => {
@@ -378,6 +380,19 @@ async function loadSnapshot() {
     render();
   } catch (error) {
     console.warn("snapshot failed", error);
+  }
+}
+
+async function reconnectCar() {
+  const button = $("reconnectCarBtn");
+  if (button) button.textContent = "重连中...";
+  try {
+    await fetch("/api/car/reconnect", { method: "POST" });
+  } catch (error) {
+    console.warn("car reconnect failed", error);
+  } finally {
+    if (button) button.textContent = "重连小车";
+    await loadSnapshot();
   }
 }
 
