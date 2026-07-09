@@ -43,6 +43,7 @@ class IcarTcpBridge:
                     if direction is None:
                         self.node.get_logger().warning(f"ignored frame from {peer}: {frame}")
                         continue
+                    self.node.get_logger().info(f"command from {peer}: {direction}")
                     self.publisher.publish(self.to_twist(direction))
                     writer.write(f"OK {direction}\n".encode("utf-8"))
                     await writer.drain()
