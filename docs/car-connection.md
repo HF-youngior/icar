@@ -72,6 +72,38 @@ python3 ~/icar_tcp_bridge.py --host 0.0.0.0 --port 6000 --topic /cmd_vel
 
 如果小车的 ROS2 环境在 Docker 容器里，就先进入老师手册要求的容器，再执行上面两行。桥接脚本运行后，Windows 再测 `6000` 应该显示 `TcpTestSucceeded : True`。然后重启后端，或点击 Web 控制页里的“重连小车”。
 
+如果小车宿主机没有 ROS2，也没有 Docker ROS2 环境，可以尝试不用 ROS 的串口桥接方式。这个方式不安装 ROS，只把 Web/鸿蒙 APP 的 TCP 控制帧直接转发到底盘串口：
+
+```powershell
+scp robot\icar_tcp_serial_bridge.py jetson@172.20.10.3:~/icar_tcp_serial_bridge.py
+```
+
+在小车 NoMachine 终端中先查看可能的串口：
+
+```bash
+ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyTHS* 2>/dev/null
+```
+
+先用 dry-run 确认 `6000` 端口能打开：
+
+```bash
+python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --dry-run
+```
+
+Windows 里测到 `6000` 通后，停止 dry-run，再指定串口正式运行。常见串口可以先试 `/dev/ttyUSB0`，如果没有再试 `/dev/ttyTHS1` 或 `/dev/ttyTHS0`：
+
+```bash
+python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --serial /dev/ttyUSB0 --baud 115200
+```
+
+如果提示权限不足，执行：
+
+```bash
+sudo python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --serial /dev/ttyUSB0 --baud 115200
+```
+
+注意：串口桥接是否能让小车动，取决于底盘固件是否直接识别 `$0115...#` 这套 APP 控制帧。手册中的 `iCar.bin` 固件支持 ROS/APP 控制，若底盘烧的是循迹固件，APP/Web 控制可能不会响应。
+
 ### 模式 C：ROS2 真车模式
 
 适合在小车 Jetson、Docker 容器或 Ubuntu 20.04 + ROS2 Foxy 环境中运行。
