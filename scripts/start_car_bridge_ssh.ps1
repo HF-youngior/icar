@@ -77,8 +77,14 @@ if (-not (Test-Path $BridgeFile)) {
 }
 
 function Get-RemoteContainerLines {
-    $RemoteCommand = "bash -lc ""docker ps -a --format '{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}' | grep -E '$ContainerFilter' || true"""
-    return Invoke-ExternalCapture "ssh" (@($SshOptions) + @($Target, $RemoteCommand))
+    $RemoteCommand = "docker ps -a --format '{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}'"
+    $Lines = @(Invoke-ExternalCapture "ssh" (@($SshOptions) + @($Target, $RemoteCommand)))
+    return $Lines | Where-Object { $_ -and $_ -match $ContainerFilter }
+}
+
+function Get-AllRemoteContainerLines {
+    $RemoteCommand = "docker ps -a --format '{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}'"
+    return @(Invoke-ExternalCapture "ssh" (@($SshOptions) + @($Target, $RemoteCommand))) | Where-Object { $_ -and $_.Trim() }
 }
 
 function Resolve-ContainerId {
@@ -88,7 +94,12 @@ function Resolve-ContainerId {
 
     $Lines = @(Get-RemoteContainerLines) | Where-Object { $_ -and $_.Trim() }
     if (-not $Lines) {
-        throw "No container matched filter '$ContainerFilter'. Reconnect the hotspot and run with -ListContainers to inspect candidates."
+        $AllLines = @(Get-AllRemoteContainerLines)
+        if ($AllLines) {
+            Write-Host "No container matched filter '$ContainerFilter'. Here are all remote containers:" -ForegroundColor Yellow
+            $AllLines | ForEach-Object { Write-Host $_ }
+        }
+        throw "No container matched filter '$ContainerFilter'. You can rerun with -Container <ID> to specify one manually."
     }
 
     $Running = $Lines | Where-Object { $_ -match "\|Up " }
@@ -116,6 +127,11 @@ if ($ListContainers) {
     }
     else {
         Write-Host "No containers matched filter '$ContainerFilter'." -ForegroundColor Yellow
+        $AllLines = @(Get-AllRemoteContainerLines)
+        if ($AllLines) {
+            Write-Host "All remote containers:" -ForegroundColor Cyan
+            $AllLines | ForEach-Object { Write-Host $_ }
+        }
     }
     exit 0
 }
