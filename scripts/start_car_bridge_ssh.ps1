@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $BridgeFile = Join-Path $ProjectRoot "robot\icar_tcp_bridge.py"
 $Target = "${CarUser}@${CarHost}"
+$RemoteBridgeFile = "/home/$CarUser/icar_tcp_bridge.py"
 $SshOptions = @(
     "-o", "ConnectTimeout=8",
     "-o", "ServerAliveInterval=15",
@@ -140,10 +141,16 @@ $Container = Resolve-ContainerId
 Write-Host "Container: $Container" -ForegroundColor Green
 Write-Host ""
 
-Invoke-External "scp" (@($SshOptions) + @($BridgeFile, "${Target}:~/icar_tcp_bridge.py"))
+Invoke-External "scp" (@($SshOptions) + @($BridgeFile, "${Target}:${RemoteBridgeFile}"))
 
-$PrepareCommand = "set -e; pkill -f icar_tcp_serial_bridge.py || true; docker start $Container >/dev/null; docker cp ~/icar_tcp_bridge.py ${Container}:/root/icar_tcp_bridge.py"
-Invoke-External "ssh" (@($SshOptions) + @($Target, $PrepareCommand))
+$StopSerialBridgeCommand = "pkill -f '[i]car_tcp_serial_bridge.py' || true"
+Invoke-External "ssh" (@($SshOptions) + @($Target, $StopSerialBridgeCommand))
+
+$StartContainerCommand = "docker start $Container >/dev/null"
+Invoke-External "ssh" (@($SshOptions) + @($Target, $StartContainerCommand))
+
+$CopyBridgeCommand = "docker cp $RemoteBridgeFile ${Container}:/root/icar_tcp_bridge.py"
+Invoke-External "ssh" (@($SshOptions) + @($Target, $CopyBridgeCommand))
 
 if ($Mode -ne "none") {
     $LaunchAlias = if ($Mode -eq "navigation") { "n1" } else { "m1" }
