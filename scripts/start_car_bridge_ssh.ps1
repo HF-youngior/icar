@@ -155,7 +155,7 @@ $RemoteScriptLines = @(
     "pkill -f '[i]car_tcp_serial_bridge.py' || true"
     "docker start $Container >/dev/null"
     "cat '$RemoteBridgeFile' | docker exec -i $Container bash -lc 'cat >/root/icar_tcp_bridge.py && chmod 755 /root/icar_tcp_bridge.py'"
-    "docker exec $Container bash -lc ""pgrep -f '[i]car_tcp_bridge.py' | xargs -r kill || true"""
+    "docker exec $Container bash -lc ""pkill -f '[i]car_tcp_bridge.py' || true"""
 )
 
 if ($LaunchAlias) {

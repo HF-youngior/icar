@@ -2,6 +2,8 @@ const page = document.body.dataset.page || "dashboard";
 const state = {
   ws: null,
   connected: false,
+  manualHoldTimer: null,
+  manualDirection: null,
   snapshot: {
     robot: {},
     navigation: {},
@@ -69,6 +71,19 @@ function send(type, payload = {}) {
   }
   state.ws.send(JSON.stringify({ type, payload }));
   return true;
+}
+
+async function postJson(url, payload = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `request failed: ${response.status}`);
+  }
+  return response.json().catch(() => ({}));
 }
 
 function handleMessage(type, payload) {
@@ -366,11 +381,17 @@ function bindEvents() {
     setText("speedValue", `${Number($("speedRange").value).toFixed(2)} m/s`);
   });
   document.querySelectorAll(".neon-dpad button").forEach((button) => {
-    button.addEventListener("click", () => send("manual_control", {
-      direction: button.dataset.dir,
-      speed: Number($("speedRange")?.value || 0.16),
-    }));
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      button.setPointerCapture?.(event.pointerId);
+      startManualHold(button.dataset.dir);
+    });
+    button.addEventListener("pointerup", () => endManualHold(true));
+    button.addEventListener("pointercancel", () => endManualHold(true));
+    button.addEventListener("lostpointercapture", () => endManualHold(true));
   });
+  window.addEventListener("pointerup", () => endManualHold(true));
+  window.addEventListener("blur", () => endManualHold(true));
 }
 
 async function loadSnapshot() {
@@ -394,6 +415,49 @@ async function reconnectCar() {
     if (button) button.textContent = "重连小车";
     await loadSnapshot();
   }
+}
+
+async function sendManualHttp(direction) {
+  const speed = Number($("speedRange")?.value || 0.16);
+  try {
+    await postJson("/api/control/manual", { direction, speed });
+  } catch (error) {
+    console.warn("manual control failed", error);
+  }
+}
+
+function clearManualHold() {
+  if (state.manualHoldTimer) {
+    clearInterval(state.manualHoldTimer);
+    state.manualHoldTimer = null;
+  }
+}
+
+function endManualHold(sendStop = true) {
+  const activeDirection = state.manualDirection;
+  clearManualHold();
+  state.manualDirection = null;
+  if (sendStop && activeDirection && activeDirection !== "stop") {
+    sendManualHttp("stop");
+  }
+}
+
+function startManualHold(direction) {
+  if (!direction) return;
+  if (direction === "stop") {
+    endManualHold(false);
+    sendManualHttp("stop");
+    return;
+  }
+  if (state.manualDirection === direction && state.manualHoldTimer) {
+    return;
+  }
+  endManualHold(false);
+  state.manualDirection = direction;
+  sendManualHttp(direction);
+  state.manualHoldTimer = window.setInterval(() => {
+    sendManualHttp(direction);
+  }, 180);
 }
 
 function escapeHtml(value) {
