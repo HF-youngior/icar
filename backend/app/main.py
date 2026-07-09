@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from .vision import VisionService
 
 
 config = load_config()
+logger = logging.getLogger(__name__)
 database = DatabaseStore(config.database)
 state = StateHub(config, database)
 adapter = build_adapter(config)
@@ -50,6 +52,7 @@ async def on_startup() -> None:
         await adapter.connect()
         await state.update_robot(connected=True, adapter=adapter.name, mode="standby")
     except Exception as exc:
+        logger.exception("car connect failed during startup")
         await state.update_robot(connected=False, adapter=adapter.name, mode="offline")
         await state.add_alarm("connection", "warning", f"小车连接失败：{exc}", "backend")
 
@@ -106,6 +109,7 @@ async def car_reconnect() -> dict[str, Any]:
         await state.update_robot(connected=True, adapter=adapter.name, mode="standby", last_error=None)
         return {"ok": True, "adapter": adapter.name}
     except Exception as exc:
+        logger.exception("car reconnect failed")
         await state.update_robot(connected=False, adapter=adapter.name, mode="offline", last_error=str(exc))
         await state.add_alarm("connection", "warning", f"小车连接失败：{exc}", "backend")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -148,6 +152,7 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return result
     except Exception as exc:
+        logger.exception("manual control failed: direction=%s speed=%s", direction, speed)
         await state.update_robot(connected=False, mode="offline", last_error=str(exc))
         await state.add_alarm("manual_control", "warning", f"控制指令失败：{exc}", "backend")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
