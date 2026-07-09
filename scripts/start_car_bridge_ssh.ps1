@@ -143,27 +143,34 @@ Write-Host ""
 
 Invoke-External "scp" (@($SshOptions) + @($BridgeFile, "${Target}:${RemoteBridgeFile}"))
 
-$StopSerialBridgeCommand = "pkill -f '[i]car_tcp_serial_bridge.py' || true"
-Invoke-External "ssh" (@($SshOptions) + @($Target, $StopSerialBridgeCommand))
-
-$StartContainerCommand = "docker start $Container >/dev/null"
-Invoke-External "ssh" (@($SshOptions) + @($Target, $StartContainerCommand))
-
-$CopyBridgeCommand = "docker cp $RemoteBridgeFile ${Container}:/root/icar_tcp_bridge.py"
-Invoke-External "ssh" (@($SshOptions) + @($Target, $CopyBridgeCommand))
-
 if ($Mode -ne "none") {
     $LaunchAlias = if ($Mode -eq "navigation") { "n1" } else { "m1" }
-    $LaunchCommand = "docker exec -d $Container bash -ic '$LaunchAlias > /tmp/icar_launch.log 2>&1'"
-    Invoke-External "ssh" (@($SshOptions) + @($Target, $LaunchCommand))
+}
+else {
+    $LaunchAlias = ""
+}
+
+$RemoteScriptLines = @(
+    "set -e"
+    "pkill -f '[i]car_tcp_serial_bridge.py' || true"
+    "docker start $Container >/dev/null"
+    "cat '$RemoteBridgeFile' | docker exec -i $Container bash -lc 'cat >/root/icar_tcp_bridge.py && chmod 755 /root/icar_tcp_bridge.py'"
+    "docker exec $Container bash -lc ""pgrep -f '[i]car_tcp_bridge.py' | xargs -r kill || true"""
+)
+
+if ($LaunchAlias) {
+    $RemoteScriptLines += "docker exec -d $Container bash -ic '$LaunchAlias > /tmp/icar_launch.log 2>&1'"
+}
+
+$RemoteScriptLines += "docker exec -d $Container bash -ic 'source /opt/ros/foxy/setup.bash 2>/dev/null || true; python3 /root/icar_tcp_bridge.py --host 0.0.0.0 --port $Port --topic $Topic > /tmp/icar_tcp_bridge.log 2>&1'"
+$RemoteScript = [string]::Join(" && ", $RemoteScriptLines)
+
+Invoke-External "ssh" (@($SshOptions) + @($Target, $RemoteScript))
+
+if ($LaunchAlias) {
     Write-Host "Started ROS2 launch alias '$LaunchAlias' in container. Log: /tmp/icar_launch.log" -ForegroundColor Green
 }
 
-$KillBridgeCommand = "docker exec $Container bash -lc `"pgrep -f '[i]car_tcp_bridge.py' | xargs -r kill || true`""
-Invoke-External "ssh" (@($SshOptions) + @($Target, $KillBridgeCommand))
-
-$StartBridgeCommand = "docker exec -d $Container bash -ic 'source /opt/ros/foxy/setup.bash 2>/dev/null || true; python3 /root/icar_tcp_bridge.py --host 0.0.0.0 --port $Port --topic $Topic > /tmp/icar_tcp_bridge.log 2>&1'"
-Invoke-External "ssh" (@($SshOptions) + @($Target, $StartBridgeCommand))
 Write-Host "Started TCP-to-ROS2 bridge. Log: /tmp/icar_tcp_bridge.log" -ForegroundColor Green
 
 if (-not $SkipPortCheck) {
