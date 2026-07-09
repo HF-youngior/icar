@@ -1,202 +1,210 @@
-# 小车连接、VMware 测试与真车联调说明
+# 小车连接说明
 
-## 1. NoMachine、SSH、Web 系统分别是什么
+## 1. 现在推荐的连接方式
 
-| 工具 | 作用 | 是否是本项目必须 |
-| --- | --- | --- |
-| NoMachine | 远程进入小车 Ubuntu 桌面，适合看 RViz、终端和图形界面 | 调试时常用，但 Web 系统不依赖它 |
-| SSH | 远程进入小车命令行，适合启动容器、启动 ROS2、查看日志 | 推荐掌握，稳定性通常比远程桌面好 |
-| Web 控制台 | 我们自己做的上位机，用浏览器遥控、导航、看状态和告警 | 项目主交付 |
-| VMware Ubuntu | 在电脑上模拟/开发 ROS2、后端、Web，不占用真车 | 多人协作时很有用 |
+现在不再把 NoMachine 作为主流程。推荐方式是：
 
-## 2. 当前项目的三种运行模式
+1. 电脑和小车连接同一个热点或同一个局域网。
+2. 在 Windows PowerShell 里用 `SSH + Docker + 自动桥接脚本` 启动小车控制链路。
+3. 本地启动 Web 后端，网页通过 TCP 连接小车。
 
-### 模式 A：模拟模式
+这样做的好处是：
 
-默认模式，不连接真车。适合所有组员在自己电脑或 VMware 中开发页面、接口、报告和演示流程。
+- 不需要一直开 NoMachine 桌面。
+- 不依赖固定容器 ID，例如之前的 `549b`。
+- 组员只需要 PowerShell 和 SSH，就能重复操作。
+
+## 2. 为什么以前的 `549b` 不可靠
+
+Docker 容器 ID 不是固定值。只要小车重新创建过容器、恢复过镜像，或者换过环境，容器 ID 就会变化。
+
+所以现在脚本已经改成：
+
+- 默认自动扫描小车上的 ROS/Foxy/Yahboom 相关容器。
+- 优先选择正在运行的容器。
+- 如果没有运行中的，再选第一个匹配到的容器。
+- 也支持你手动传入 `-Container` 指定容器。
+
+## 3. 先决条件
+
+默认假设：
+
+- 小车 IP：`172.20.10.3`
+- 小车用户名：`jetson`
+- 小车密码：`yahboom`
+- 小车 ROS2 环境在 Docker 容器里，不在宿主机里
+- 容器里可以使用手册中的别名，例如 `m1`、`n1`
+
+如果 IP 改了，只要把命令里的 `172.20.10.3` 换成当前 IP 即可。
+
+## 4. 推荐操作流程
+
+### 4.1 查看当前有哪些容器
+
+热点重新连上后，在项目根目录执行：
 
 ```powershell
 cd F:\北交大2周项目\icar-smart-home
-.\scripts\start_backend.ps1
+.\scripts\start_car_bridge_ssh.ps1 -ListContainers
 ```
 
-浏览器打开：
+这一步不会启动桥接，只会列出候选容器。
 
-```text
-http://127.0.0.1:8000
-```
-
-### 模式 B：TCP 真车模式
-
-参考鸿蒙 APP 资料，小车 TCP 端口为 `6000`，控制帧格式类似：
-
-```text
-$011504011B#
-```
-
-含义：`cmd 15` 按钮控制，方向 `01` 表示前进。  
-本项目后端已经实现了该协议的基础方向控制。
-
-启动方式：
+如果想手动查看，也可以直接执行：
 
 ```powershell
+ssh jetson@172.20.10.3 "docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}'"
+```
+
+### 4.2 启动映射模式桥接
+
+如果你要做建图、键盘控制这一类流程，执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_car_bridge_ssh.ps1 -Mode mapping
+```
+
+脚本会自动完成这些动作：
+
+- 把 `robot/icar_tcp_bridge.py` 复制到小车
+- 自动找到合适的 Docker 容器
+- 启动容器
+- 停掉旧的串口桥接
+- 在容器里执行 `m1`
+- 在容器里启动 TCP 到 ROS2 `/cmd_vel` 的桥接服务
+
+### 4.3 启动导航模式桥接
+
+如果你要走导航链路，执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_car_bridge_ssh.ps1 -Mode navigation
+```
+
+它和上面类似，只是会在容器里执行 `n1`。
+
+### 4.4 手动指定容器
+
+如果自动识别到了多个容器，或者你明确知道该用哪一个，可以手动指定：
+
+```powershell
+.\scripts\start_car_bridge_ssh.ps1 -Container 12ab34cd56ef -Mode mapping
+```
+
+### 4.5 启动本地 Web 后端
+
+等小车桥接启动后，在另一个 PowerShell 窗口执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
 $env:ICAR_CAR_ADAPTER="tcp"
 $env:ICAR_CAR_HOST="172.20.10.3"
 $env:ICAR_CAR_PORT="6000"
 .\scripts\start_backend.ps1
 ```
 
-其中 `172.20.10.3` 要换成你们当时小车实际 IP。
+然后浏览器打开：
 
-如果页面左下角显示“已连接”，但右侧小车状态是 `offline`，通常表示浏览器已经连上本机后端，但后端没有连上小车。先在 Windows PowerShell 检查：
+```text
+http://127.0.0.1:8000/control
+```
+
+## 5. 调试命令
+
+### 5.1 查看桥接日志
 
 ```powershell
-powershell -Command "Test-NetConnection 172.20.10.3 -Port 4000"
+ssh jetson@172.20.10.3 "docker exec <容器ID> bash -lc 'tail -n 40 /tmp/icar_tcp_bridge.log /tmp/icar_launch.log 2>/dev/null'"
+```
+
+### 5.2 检查 6000 端口是否打开
+
+```powershell
 powershell -Command "Test-NetConnection 172.20.10.3 -Port 6000"
 ```
 
-`4000` 是 NoMachine 远程桌面端口，通了只说明能进小车桌面。`6000` 才是鸿蒙 APP/Web 遥控使用的 TCP 控制端口；如果 `6000` 不通，Web 遥控不会动。
+如果 `TcpTestSucceeded : True`，说明 Web 后端可以连到小车控制桥。
 
-本项目提供了一个小车端 TCP-to-ROS2 桥接脚本：`robot/icar_tcp_bridge.py`。当小车没有现成的 `6000` 控制服务时，可以把脚本复制到小车，并在小车 ROS2 Foxy 环境中运行：
-
-```powershell
-scp robot\icar_tcp_bridge.py jetson@172.20.10.3:~/icar_tcp_bridge.py
-```
-
-在 NoMachine 或 SSH 进入小车后执行：
-
-```bash
-source /opt/ros/foxy/setup.bash
-python3 ~/icar_tcp_bridge.py --host 0.0.0.0 --port 6000 --topic /cmd_vel
-```
-
-如果小车的 ROS2 环境在 Docker 容器里，就先进入老师手册要求的容器，再执行上面两行。桥接脚本运行后，Windows 再测 `6000` 应该显示 `TcpTestSucceeded : True`。然后重启后端，或点击 Web 控制页里的“重连小车”。
-
-如果小车宿主机没有 ROS2，也没有 Docker ROS2 环境，可以尝试不用 ROS 的串口桥接方式。这个方式不安装 ROS，只把 Web/鸿蒙 APP 的 TCP 控制帧直接转发到底盘串口：
+### 5.3 检查当前 ROS 话题
 
 ```powershell
-scp robot\icar_tcp_serial_bridge.py jetson@172.20.10.3:~/icar_tcp_serial_bridge.py
+ssh jetson@172.20.10.3 "docker exec <容器ID> bash -lc 'ros2 topic list'"
 ```
 
-在小车 NoMachine 终端中先查看可能的串口：
+如果后面要进一步排查 `/cmd_vel`，这个命令很有用。
 
-```bash
-ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyTHS* 2>/dev/null
-```
+## 6. 如果暂时不连真车
 
-先用 dry-run 确认 `6000` 端口能打开：
-
-```bash
-python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --dry-run
-```
-
-Windows 里测到 `6000` 通后，停止 dry-run，再指定串口正式运行。常见串口可以先试 `/dev/ttyUSB0`，如果没有再试 `/dev/ttyTHS1` 或 `/dev/ttyTHS0`：
-
-```bash
-python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --serial /dev/ttyUSB0 --baud 115200
-```
-
-如果提示权限不足，执行：
-
-```bash
-sudo python3 ~/icar_tcp_serial_bridge.py --host 0.0.0.0 --port 6000 --serial /dev/ttyUSB0 --baud 115200
-```
-
-注意：串口桥接是否能让小车动，取决于底盘固件是否直接识别 `$0115...#` 这套 APP 控制帧。手册中的 `iCar.bin` 固件支持 ROS/APP 控制，若底盘烧的是循迹固件，APP/Web 控制可能不会响应。
-
-### 模式 C：ROS2 真车模式
-
-适合在小车 Jetson、Docker 容器或 Ubuntu 20.04 + ROS2 Foxy 环境中运行。
-
-```bash
-source /opt/ros/foxy/setup.bash
-export ICAR_CAR_ADAPTER=ros2_cli
-./scripts/start_backend.sh
-```
-
-后端会发布：
-
-```bash
-/cmd_vel
-/goal_pose
-```
-
-前提是小车底盘、雷达、导航栈已经按手册启动。
-
-## 3. SSH 怎么连小车
-
-如果小车 IP 是 `172.20.10.3`：
-
-```bash
-ssh jetson@172.20.10.3
-```
-
-密码通常是：
-
-```text
-yahboom
-```
-
-老师群里发的示例：
-
-```bash
-ssh jetson@192.168.43.60
-```
-
-这里的 `192.168.43.60` 只是那一次网络里的 IP。你们换热点、换手机、换有线网络后，IP 会变，必须用当前小车显示或路由器里看到的 IP。
-
-如果 Windows 想使用 `sshpass`，老师发的命令是为了免手输密码：
+如果热点没开，或者小车暂时不在手边，组员可以先跑模拟模式：
 
 ```powershell
-winget install --id=xhcoding.sshpass-win32 -e
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_backend.ps1
 ```
 
-也可以不用 `sshpass`，直接执行 `ssh jetson@小车IP`，然后手动输入密码。
+这时 Web 会用模拟数据跑起来，适合前端、报告、告警、页面联调。
 
-## 4. 热点为什么容易卡
+## 7. 为什么不再推荐直接串口桥接
 
-手机热点通常有几个问题：
+之前我们试过 `icar_tcp_serial_bridge.py`，可以收到 Web 发来的控制帧，但小车没有实际运动。  
+这说明“TCP 数据到小车宿主机”是通的，但没有走手册 3.7 里的正式 ROS2 控制链路。
 
-1. 小车、电脑、VMware 都抢同一个无线链路，延迟会飘。
-2. NoMachine 是图形远程桌面，带宽占用比 SSH 大。
-3. ROS2 DDS 对网络发现和组播比较敏感，NAT/热点隔离可能导致发现不稳定。
-4. 一台小车通常只能给一组人真机联调，其他人同时连会互相影响。
+所以现在统一改成：
 
-建议：
+- Web -> TCP 6000
+- TCP 桥接 -> Docker 容器中的 ROS2 `/cmd_vel`
+- 小车底盘 -> 按手册已有控制链路执行
 
-1. 真车调试时尽量少开 NoMachine，多用 SSH。
-2. Web 页面和后端可以先在模拟模式跑，只有控制和导航最后再接真车。
-3. 真车演示前录制一段视频，避免现场网络断开。
+这个方案更接近老师手册里的实际运行方式。
 
-## 5. VMware 有什么用
+## 8. VMware 现在的作用
 
-VMware 不是为了替代小车，而是为了让大家不用抢真车也能开发：
+VMware 依然有用，只是作用变成：
 
-| VMware 环境 | 用途 |
-| --- | --- |
-| Ubuntu 20.04 + ROS2 Foxy | 最接近小车 ROS2 Foxy 环境，适合测试 ROS2 命令、后端 `ros2_cli` 适配 |
-| Ubuntu 22.04 + ROS2 Humble | 适合老师要求的仿真实验，和后续算法/仿真练习 |
-| Windows 主机 | 适合跑 Web 前端、FastAPI 后端模拟模式、写文档和推送 GitHub |
+- Ubuntu 20.04 + ROS2 Foxy：熟悉 ROS2 指令，做导航逻辑开发
+- Ubuntu 22.04 + ROS2 Humble：完成后续仿真实验
+- Windows 本机：运行 Web、后端、文档、数据库和 Git
 
-如果多人分工：
+也就是说，真车联调不是每个人都必须一直占着小车做。
 
-- Web 同学：直接 Windows 或 VMware 模拟模式即可。
-- 传感器/告警同学：直接模拟数据即可。
-- Yolo 同学：可在有 GPU 的电脑训练，或先用预训练模型和图片测试。
-- 导航同学：用 VMware Foxy 熟悉 ROS2 命令，真车空闲时再验证 `/cmd_vel`、`/goal_pose`。
+## 9. 常见问题
 
-## 6. 我们 Web 能不能替代鸿蒙 APP
+### Q1：脚本提示没有匹配到容器
 
-可以。鸿蒙 APP 的核心也是：
+先执行：
 
-1. 连接小车 IP 和 TCP 端口。
-2. 把按钮/摇杆转换成小车控制协议。
-3. 显示视频或状态。
+```powershell
+.\scripts\start_car_bridge_ssh.ps1 -ListContainers
+```
 
-我们做 Web 的好处是：
+如果还是没有结果，说明：
 
-1. 不需要鸿蒙测试机。
-2. 电脑、iPhone 浏览器都可以访问。
-3. 更容易和 ROS2、Yolo、报告、GitHub 结合。
+- 热点还没连好
+- 小车没开机
+- Docker 容器名称或镜像名和当前过滤规则不一致
 
-当前 Web 已经实现模拟控制和 TCP/ROS2 接口预留，后续只要确认真车当前启动的是哪种服务，就能逐步替换模拟适配器。
+这时直接手工看：
+
+```powershell
+ssh jetson@172.20.10.3 "docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}'"
+```
+
+### Q2：Web 页面能打开，但小车不动
+
+优先检查三件事：
+
+1. `6000` 端口是否真的通了
+2. 桥接是否在 Docker 容器里启动成功
+3. 容器里的底盘控制链路是否已经按手册启动
+
+### Q3：NoMachine 还用不用
+
+还能用，但只建议在这些时候用：
+
+- 看 RViz
+- 看桌面程序
+- 非要图形界面操作时
+
+正常启停桥接和控制链路，优先用 SSH。
