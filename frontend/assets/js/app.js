@@ -19,7 +19,17 @@ const state = {
     selectedMap: "",
     mapMeta: null,
     mapImage: null,
-    click: null,
+    pickMode: "start",
+    startPose: null,
+    goalPose: null,
+    goals: [],
+    selectedGoalId: "",
+    nextGoalNumber: 1,
+    goalColors: ["#ff4fd8", "#ffcf5a", "#26f4ff", "#9f6bff", "#7dff9b"],
+    goalMonitorTimer: null,
+    goalMonitorBusy: false,
+    activeGoalId: "",
+    initialPoseSent: false,
   },
   snapshot: {
     robot: {},
@@ -120,6 +130,8 @@ async function postJson(url, payload = {}) {
         message = data.detail;
       } else if (data.detail?.error) {
         message = data.detail.error;
+      } else if (data.detail?.message) {
+        message = data.detail.message;
       } else if (data.error) {
         message = data.error;
       }
@@ -228,6 +240,7 @@ function renderControl() {
 
 function renderNavigation() {
   drawSlamMap();
+  updateSlamPoseTexts();
 }
 
 function renderVisionPage() {
@@ -364,7 +377,17 @@ async function sendAuxControl(action, payload = {}) {
   setText("auxResult", "发送中...");
   try {
     const result = await postJson("/api/control/aux", { action, ...payload });
-    setText("auxResult", `已执行 ${action} · ${result.adapter || "tcp"}`);
+    let message = `已执行 ${action} · ${result.adapter || "tcp"}`;
+    if (action === "voice") {
+      message = result.spoken
+        ? `小车已语音回应 · ${result.engine || "voice"}`
+        : `小车语音不可用，已退回提示音 · ${result.engine || "beep"}`;
+    } else if (action === "light" && result.runtime) {
+      const sshOk = result.runtime?.ok ? "SSH灯控OK" : "SSH灯控未确认";
+      const tcpOk = result.tcp?.ok ? "TCP帧OK" : "TCP帧未确认";
+      message = `灯光指令已发送 · ${sshOk} / ${tcpOk}`;
+    }
+    setText("auxResult", message);
     await loadSnapshot();
     return true;
   } catch (error) {
@@ -581,7 +604,18 @@ async function loadSelectedSlamMap() {
   const select = $("slamMapSelect");
   const name = select?.value || state.slam.selectedMap;
   if (!name) return;
+  const previousMap = state.slam.selectedMap;
   state.slam.selectedMap = name;
+  if (previousMap && previousMap !== name) {
+    state.slam.startPose = null;
+    state.slam.goalPose = null;
+    state.slam.goals = [];
+    state.slam.selectedGoalId = "";
+    state.slam.nextGoalNumber = 1;
+    clearSlamGoalMonitor();
+    state.slam.initialPoseSent = false;
+    updateSlamPoseTexts();
+  }
   setText("slamMapHint", `正在加载地图 ${name}...`);
   try {
     const mapInfo = state.slam.maps.find((item) => item.name === name) || {};
@@ -632,19 +666,32 @@ function drawSlamMap() {
   ctx.lineWidth = 2;
   ctx.strokeRect(frame.x, frame.y, frame.w, frame.h);
 
-  if (state.slam.click) {
-    const p = worldToCanvas(state.slam.click.x, state.slam.click.y);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-    ctx.fillStyle = "#ff4fd8";
-    ctx.shadowBlur = 18;
-    ctx.shadowColor = "#ff4fd8";
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#e9f7ff";
-    ctx.font = "14px Microsoft YaHei, Arial";
-    ctx.fillText(`(${state.slam.click.x.toFixed(2)}, ${state.slam.click.y.toFixed(2)})`, p.x + 12, p.y - 10);
-  }
+  drawSlamPoseMarker(ctx, state.slam.startPose, "#7dff9b", "当前位置");
+  drawSlamPoseMarker(ctx, state.slam.goalPose, "#ff4fd8", "目标点");
+}
+
+function drawSlamPoseMarker(ctx, pose, color, label) {
+  if (!pose) return;
+  const p = worldToCanvas(pose.x, pose.y);
+  const theta = Number(pose.theta || 0);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = color;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y);
+  ctx.lineTo(p.x + Math.cos(theta) * 24, p.y - Math.sin(theta) * 24);
+  ctx.stroke();
+  ctx.fillStyle = "#e9f7ff";
+  ctx.font = "14px Microsoft YaHei, Arial";
+  ctx.fillText(`${label} (${pose.x.toFixed(2)}, ${pose.y.toFixed(2)})`, p.x + 12, p.y - 10);
+  ctx.restore();
 }
 
 function slamMapFrame() {
@@ -696,13 +743,48 @@ function worldToCanvas(x, y) {
 function handleSlamMapClick(event) {
   const world = canvasToWorld(event.clientX, event.clientY);
   if (!world) return;
-  state.slam.click = world;
+  const pose = { ...world, theta: Number($("slamPoseTheta")?.value || 0) };
+  if (state.slam.pickMode === "start") {
+    state.slam.startPose = pose;
+    state.slam.initialPoseSent = false;
+    setText("slamMapHint", "已点选绿色当前位置。启动导航后请点击“确认当前位置”。");
+  } else {
+    state.slam.goalPose = pose;
+    setText("slamMapHint", "已点选粉色目标点。确认当前位置后可以点击“去目标点”。");
+  }
+  setSlamPoseInputs(pose);
+  updateSlamPoseTexts();
+  drawSlamMap();
+}
+
+function setSlamPoseInputs(pose) {
   const xInput = $("slamPoseX");
   const yInput = $("slamPoseY");
-  if (xInput) xInput.value = world.x.toFixed(2);
-  if (yInput) yInput.value = world.y.toFixed(2);
-  setText("slamClickCoord", `${world.x.toFixed(2)}, ${world.y.toFixed(2)}`);
-  drawSlamMap();
+  const thetaInput = $("slamPoseTheta");
+  if (xInput) xInput.value = Number(pose.x || 0).toFixed(2);
+  if (yInput) yInput.value = Number(pose.y || 0).toFixed(2);
+  if (thetaInput && pose.theta !== undefined) thetaInput.value = Number(pose.theta || 0).toFixed(2);
+}
+
+function formatSlamPose(pose) {
+  if (!pose) return "未设置";
+  return `${Number(pose.x || 0).toFixed(2)}, ${Number(pose.y || 0).toFixed(2)}, θ ${Number(pose.theta || 0).toFixed(2)}`;
+}
+
+function updateSlamPoseTexts() {
+  setText("slamPickModeText", state.slam.pickMode === "start" ? "当前位置/起点" : "目标点");
+  setText("slamStartCoord", formatSlamPose(state.slam.startPose));
+  setText("slamGoalCoord", formatSlamPose(state.slam.goalPose));
+  $("slamPickStartBtn")?.classList.toggle("active", state.slam.pickMode === "start");
+  $("slamPickGoalBtn")?.classList.toggle("active", state.slam.pickMode === "goal");
+}
+
+function setSlamPickMode(mode) {
+  state.slam.pickMode = mode === "goal" ? "goal" : "start";
+  updateSlamPoseTexts();
+  setText("slamMapHint", state.slam.pickMode === "start"
+    ? "当前是绿色当前位置/起点模式：在地图上点小车现在的位置。"
+    : "当前是粉色目标点模式：在地图上点小车要去的位置。");
 }
 
 function renderSlamMapMeta() {
@@ -723,13 +805,19 @@ async function refreshSlamStatus() {
     const data = await getJson("/api/slam/status");
     const ports = data.ports || {};
     const topics = data.topics || [];
+    const nav2 = data.nav2 || {};
     list.innerHTML = [
       statusRow("小车", `${data.host || "--"} · SSH ${ports.ssh_22 ? "open" : "closed"}`),
       statusRow("ROS 容器", data.container?.running ? "icar_web_nav running" : "未运行"),
       statusRow("模式", data.mode || "idle"),
       statusRow("端口", `6000 ${ports.control_6000 ? "open" : "--"} · 6500 ${ports.camera_6500 ? "open" : "--"}`),
+      statusRow("Nav2 action", nav2.ready ? "/navigate_to_pose ready" : `/navigate_to_pose not ready (${nav2.action_servers ?? 0})`),
+      statusRow("bt_navigator", nav2.bt_navigator_active ? "active" : (nav2.bt_navigator_defunct ? "crashed/defunct" : "not active")),
       statusRow("ROS topics", topics.slice(0, 8).join(", ") || "暂无"),
     ].join("");
+    if (nav2.crashed || (data.mode || "").includes("navigation")) {
+      setText("slamDiagnosis", nav2.message || (nav2.ready ? "Nav2 导航服务已经就绪，可以确认当前位置并发送目标点。" : "Nav2 导航服务还没就绪。"));
+    }
   } catch (error) {
     list.innerHTML = statusRow("读取失败", error.message || String(error));
   }
@@ -744,9 +832,29 @@ async function refreshSlamLogs() {
   if (!log) return;
   try {
     const data = await getJson("/api/slam/logs");
+    updateSlamDiagnosis(data.logs || "");
     log.textContent = data.logs || "暂无日志";
   } catch (error) {
     log.textContent = `日志读取失败：${error.message || error}`;
+  }
+}
+
+function updateSlamDiagnosis(logs) {
+  const text = logs || "";
+  if ((text.includes("process has died") && text.includes("bt_navigator")) || text.includes("exit code -11")) {
+    setText("slamDiagnosis", "车端 bt_navigator 已崩溃，/navigate_to_pose action server 会消失。请先点“启动导航”重新拉起 Nav2，再确认当前位置并发送目标点。");
+  } else if (text.includes("send_goal failed")) {
+    setText("slamDiagnosis", "Nav2 收到目标后执行失败。请先点“启动导航”重启导航服务，并确认目标点在白色可通行区域、不要贴墙或障碍物。");
+  } else if (text.includes("Action servers: 0")) {
+    setText("slamDiagnosis", "当前没有 /navigate_to_pose action server，导航节点未就绪或已经崩溃。请重新点击“启动导航”。");
+  } else if (state.slam.initialPoseSent) {
+    setText("slamDiagnosis", "当前位置已经由 AMCL/TF 确认。现在可以发送目标点；到达后再点“同步小车当前位姿”更新绿色起点。");
+  } else if (text.includes("Please set the initial pose") || text.includes("Invalid frame ID \"map\"")) {
+    setText("slamDiagnosis", "导航已启动，但 AMCL 还不知道小车在地图中的当前位置。先点“点选当前位置/起点”，在地图上点小车当前所在位置，再点“确认当前位置”。");
+  } else if (text.includes("Timed out waiting for transform")) {
+    setText("slamDiagnosis", "ROS2 正在等待 map 到 base_footprint 的 TF。通常是还没设置当前位置，或者地图、雷达、底盘链路没有完全启动。");
+  } else {
+    setText("slamDiagnosis", "建图靠激光雷达和里程计生成 2D 栅格地图；导航前需要先让 AMCL 知道小车当前在地图上的位置。");
   }
 }
 
@@ -754,6 +862,9 @@ async function runSlamAction(label, action) {
   setText("navMessage", `${label}...`);
   try {
     const result = await action();
+    if (result && result.ok === false) {
+      throw new Error(result.message || result.error || `${label}未成功`);
+    }
     setText("navMessage", `${label}完成`);
     await refreshSlamStatus();
     await refreshSlamLogs();
@@ -771,6 +882,9 @@ function bindSlamEvents() {
   $("slamMapSelect")?.addEventListener("change", loadSelectedSlamMap);
   $("slamRefreshMapsBtn")?.addEventListener("click", loadSlamMaps);
   $("slamReloadMapBtn")?.addEventListener("click", loadSelectedSlamMap);
+  $("slamPickStartBtn")?.addEventListener("click", () => setSlamPickMode("start"));
+  $("slamPickGoalBtn")?.addEventListener("click", () => setSlamPickMode("goal"));
+  $("slamSyncPoseBtn")?.addEventListener("click", () => runSlamAction("同步当前位姿", () => syncSlamPose(true)).catch(() => null));
   $("slamRefreshStatusBtn")?.addEventListener("click", () => {
     refreshSlamStatus();
     refreshSlamLogs();
@@ -784,18 +898,24 @@ function bindSlamEvents() {
     await loadSlamMaps();
     return result;
   }));
-  $("slamStartNavBtn")?.addEventListener("click", () => runSlamAction("启动导航系统", () => (
-    postJson("/api/slam/navigation/start", {
-      algorithm: $("slamNavAlgorithm")?.value || "dwa",
-      map: $("slamMapSelect")?.value || "yahboomcar.yaml",
-    })
-  )));
-  $("slamSetInitialBtn")?.addEventListener("click", () => runSlamAction("设置初始位姿", () => (
-    postJson("/api/slam/pose/initial", currentSlamPose())
-  )));
-  $("slamSendGoalBtn")?.addEventListener("click", () => runSlamAction("发送导航目标", () => (
-    postJson("/api/slam/goal", currentSlamPose())
-  )));
+  $("slamStartNavBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("启动导航系统", async () => {
+      state.slam.initialPoseSent = false;
+      return postJson("/api/slam/navigation/start", {
+        algorithm: $("slamNavAlgorithm")?.value || "dwa",
+        map: $("slamMapSelect")?.value || "yahboomcar.yaml",
+      });
+    }).catch(() => null);
+  });
+  $("slamSetInitialBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("确认当前位置", sendSlamInitialPose).catch(() => null);
+  });
+  $("slamSendGoalBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("发送导航目标", sendSlamGoal).catch(() => null);
+  });
   $("slamStopBtn")?.addEventListener("click", () => runSlamAction("停止 SLAM/导航", () => (
     postJson("/api/slam/stop", {})
   )));
@@ -809,6 +929,428 @@ function currentSlamPose() {
   };
 }
 
+async function syncSlamPose(showError = false) {
+  const result = await getJson("/api/slam/pose/current");
+  if (!result.ok || !result.pose) {
+    const message = result.message || "还没有 AMCL 位姿。请先设置当前位置，再等待几秒。";
+    if (showError) throw new Error(message);
+    setText("slamDiagnosis", message);
+    return result;
+  }
+  state.slam.startPose = result.pose;
+  state.slam.initialPoseSent = true;
+  setSlamPoseInputs(result.pose);
+  updateSlamPoseTexts();
+  drawSlamMap();
+  setText("slamDiagnosis", "已从 AMCL 同步小车当前位姿，下一次导航会把这里作为起点。");
+  return result;
+}
+
+async function sendSlamInitialPose(requireLocalized = false) {
+  const pose = state.slam.startPose || currentSlamPose();
+  state.slam.startPose = pose;
+  const result = await postJson("/api/slam/pose/initial", { ...pose, wait_sec: 10 });
+  const localized = result.localized || {};
+  if (localized.ok && localized.pose) {
+    state.slam.startPose = localized.pose;
+    state.slam.initialPoseSent = true;
+    setSlamPoseInputs(localized.pose);
+    setText("slamDiagnosis", "AMCL 已确认当前位置。现在可以点选目标点并发送导航目标。");
+  } else {
+    state.slam.initialPoseSent = false;
+    setSlamPoseInputs(pose);
+    const message = localized.message || "当前位置已发布，但 AMCL 还没有回传地图坐标。请确认导航已启动、雷达正常，再点一次“确认当前位置”。";
+    setText("slamDiagnosis", message);
+    if (requireLocalized) throw new Error(message);
+  }
+  updateSlamPoseTexts();
+  drawSlamMap();
+  return result;
+}
+
+async function sendSlamGoal() {
+  if (!state.slam.goalPose) {
+    throw new Error("请先点击“点选目标点”，再在地图上选择小车要去的位置。");
+  }
+  const initialPose = state.slam.startPose || currentSlamPose();
+  state.slam.startPose = initialPose;
+  const result = await postJson("/api/slam/goal", {
+    ...state.slam.goalPose,
+    initial_pose: initialPose,
+    require_localized: true,
+  });
+  if (result.ok === false) {
+    throw new Error(result.message || "导航目标没有被 Nav2 接受。");
+  }
+  setText("slamDiagnosis", "目标点已发送，Navigation2 已经收到可用当前位置。到达后请手动同步或点选绿色当前位置，再点“确认当前位置”。");
+  return result;
+}
+
+function ensureSlamGoalControls() {
+  if ($("slamGoalSelect")) return;
+  const modeRow = document.querySelector(".mode-row");
+  if (!modeRow) return;
+  const row = document.createElement("div");
+  row.className = "goal-row";
+  row.innerHTML = `
+    <select id="slamGoalSelect" aria-label="导航目标点"></select>
+    <button class="neon-btn ghost" id="slamAddGoalBtn" type="button">新增目标点</button>
+    <button class="neon-btn ghost" id="slamDeleteGoalBtn" type="button">删除目标点</button>
+  `;
+  const list = document.createElement("div");
+  list.className = "goal-list";
+  list.id = "slamGoalList";
+  modeRow.insertAdjacentElement("afterend", row);
+  row.insertAdjacentElement("afterend", list);
+}
+
+function selectedSlamGoal() {
+  return state.slam.goals.find((goal) => goal.id === state.slam.selectedGoalId) || null;
+}
+
+function goalNameForIndex(index) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  return `目标 ${alphabet[index % alphabet.length]}${index >= alphabet.length ? Math.floor(index / alphabet.length) + 1 : ""}`;
+}
+
+function createSlamGoal(pose = null) {
+  const number = state.slam.nextGoalNumber++;
+  const goal = {
+    id: `goal-${Date.now()}-${number}`,
+    name: goalNameForIndex(state.slam.goals.length),
+    color: state.slam.goalColors[state.slam.goals.length % state.slam.goalColors.length],
+    x: pose ? Number(pose.x || 0) : 0,
+    y: pose ? Number(pose.y || 0) : 0,
+    theta: pose ? Number(pose.theta || 0) : Number($("slamPoseTheta")?.value || 0),
+  };
+  state.slam.goals.push(goal);
+  state.slam.selectedGoalId = goal.id;
+  state.slam.goalPose = goal;
+  renderSlamGoalList();
+  return goal;
+}
+
+function upsertSelectedSlamGoal(pose) {
+  let goal = selectedSlamGoal();
+  if (!goal) goal = createSlamGoal(pose);
+  goal.x = Number(pose.x || 0);
+  goal.y = Number(pose.y || 0);
+  goal.theta = Number(pose.theta || 0);
+  state.slam.selectedGoalId = goal.id;
+  state.slam.goalPose = goal;
+  renderSlamGoalList();
+  return goal;
+}
+
+function deleteSelectedSlamGoal() {
+  const current = state.slam.selectedGoalId;
+  if (!current) return;
+  const index = state.slam.goals.findIndex((goal) => goal.id === current);
+  if (index < 0) return;
+  state.slam.goals.splice(index, 1);
+  const next = state.slam.goals[Math.min(index, state.slam.goals.length - 1)] || null;
+  state.slam.selectedGoalId = next?.id || "";
+  state.slam.goalPose = next;
+  if (next) setSlamPoseInputs(next);
+  renderSlamGoalList();
+  updateSlamPoseTexts();
+  drawSlamMap();
+}
+
+function renderSlamGoalList() {
+  const select = $("slamGoalSelect");
+  const list = $("slamGoalList");
+  if (select) {
+    select.innerHTML = state.slam.goals.length
+      ? state.slam.goals.map((goal) => `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.name)} · ${formatSlamPose(goal)}</option>`).join("")
+      : `<option value="">尚未设置目标点</option>`;
+    select.value = state.slam.selectedGoalId || "";
+  }
+  if (list) {
+    list.innerHTML = state.slam.goals.length
+      ? state.slam.goals.map((goal) => `
+        <button class="goal-item ${goal.id === state.slam.selectedGoalId ? "active" : ""}" data-goal-id="${escapeHtml(goal.id)}" type="button">
+          <span class="goal-swatch" style="background:${escapeHtml(goal.color || "#ff4fd8")}"></span>
+          <strong>${escapeHtml(goal.name)}</strong>
+          <small>${escapeHtml(formatSlamPose(goal))}</small>
+        </button>
+      `).join("")
+      : `<div class="goal-empty">点“新增目标点”，再在地图上点击要去的位置。</div>`;
+    list.querySelectorAll("[data-goal-id]").forEach((button) => {
+      button.addEventListener("click", () => selectSlamGoal(button.dataset.goalId || ""));
+    });
+  }
+}
+
+function selectSlamGoal(goalId) {
+  const goal = state.slam.goals.find((item) => item.id === goalId);
+  if (!goal) return;
+  state.slam.selectedGoalId = goal.id;
+  state.slam.goalPose = goal;
+  state.slam.pickMode = "goal";
+  setSlamPoseInputs(goal);
+  renderSlamGoalList();
+  updateSlamPoseTexts();
+  drawSlamMap();
+}
+
+function applySlamPoseInputsToSelection() {
+  const pose = currentSlamPose();
+  if (state.slam.pickMode === "goal") {
+    upsertSelectedSlamGoal(pose);
+  } else {
+    state.slam.startPose = pose;
+    state.slam.initialPoseSent = false;
+  }
+  updateSlamPoseTexts();
+  drawSlamMap();
+}
+
+function clearSlamGoalMonitor() {
+  if (state.slam.goalMonitorTimer) {
+    clearInterval(state.slam.goalMonitorTimer);
+    state.slam.goalMonitorTimer = null;
+  }
+  state.slam.goalMonitorBusy = false;
+  state.slam.activeGoalId = "";
+}
+
+function startSlamGoalMonitor(goal) {
+  clearSlamGoalMonitor();
+  if (!goal) return;
+  state.slam.activeGoalId = goal.id || "";
+  let ticks = 0;
+  state.slam.goalMonitorTimer = window.setInterval(async () => {
+    if (state.slam.goalMonitorBusy) return;
+    state.slam.goalMonitorBusy = true;
+    ticks += 1;
+    try {
+      const result = await getJson("/api/slam/pose/current");
+      if (result.ok && result.pose) {
+        const dx = Number(result.pose.x || 0) - Number(goal.x || 0);
+        const dy = Number(result.pose.y || 0) - Number(goal.y || 0);
+        const distance = Math.hypot(dx, dy);
+        setText("slamDiagnosis", `正在前往 ${goal.name}，AMCL 估计距离约 ${distance.toFixed(2)} m。到达后请手动同步或点选绿色当前位置，再点“确认当前位置”。`);
+      }
+      if (ticks > 75) {
+        clearSlamGoalMonitor();
+        setText("slamDiagnosis", "目标点轮询已超时。如果小车已经到达，请手动同步或点选绿色当前位置，再点“确认当前位置”。");
+      }
+    } catch (error) {
+      console.warn("goal monitor failed", error);
+    } finally {
+      state.slam.goalMonitorBusy = false;
+    }
+  }, 2000);
+}
+
+function drawSlamMap() {
+  const canvas = $("slamMapCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#06101f";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const image = state.slam.mapImage;
+  if (!image) {
+    ctx.fillStyle = "#8ea4b8";
+    ctx.font = "18px Microsoft YaHei, Arial";
+    ctx.fillText("加载小车地图后会显示真实 SLAM 栅格图", 28, 48);
+    return;
+  }
+
+  const frame = slamMapFrame();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, frame.x, frame.y, frame.w, frame.h);
+  ctx.strokeStyle = "rgba(38,244,255,0.5)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(frame.x, frame.y, frame.w, frame.h);
+  drawSlamPoseMarker(ctx, state.slam.startPose, "#7dff9b", "当前位置");
+  const goals = state.slam.goals.length ? state.slam.goals : (state.slam.goalPose ? [state.slam.goalPose] : []);
+  goals.forEach((goal) => {
+    drawSlamPoseMarker(ctx, goal, goal.color || "#ff4fd8", goal.name || "目标点", goal.id === state.slam.selectedGoalId);
+  });
+}
+
+function drawSlamPoseMarker(ctx, pose, color, label, selected = false) {
+  if (!pose || !state.slam.mapImage) return;
+  const p = worldToCanvas(Number(pose.x || 0), Number(pose.y || 0));
+  const theta = Number(pose.theta || 0);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = color;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  if (selected) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y);
+  ctx.lineTo(p.x + Math.cos(theta) * 24, p.y - Math.sin(theta) * 24);
+  ctx.stroke();
+  ctx.fillStyle = "#e9f7ff";
+  ctx.font = "14px Microsoft YaHei, Arial";
+  ctx.fillText(`${label} (${Number(pose.x || 0).toFixed(2)}, ${Number(pose.y || 0).toFixed(2)})`, p.x + 12, p.y - 10);
+  ctx.restore();
+}
+
+function handleSlamMapClick(event) {
+  const world = canvasToWorld(event.clientX, event.clientY);
+  if (!world) return;
+  const pose = { ...world, theta: Number($("slamPoseTheta")?.value || 0) };
+  if (state.slam.pickMode === "start") {
+    state.slam.startPose = pose;
+    state.slam.initialPoseSent = false;
+    setText("slamMapHint", "已点选绿色当前位置。启动导航后点击“确认当前位置”。");
+  } else {
+    const goal = upsertSelectedSlamGoal(pose);
+    setText("slamMapHint", `已设置 ${goal.name}。确认当前位置后可以点击“去目标点”。`);
+  }
+  setSlamPoseInputs(pose);
+  updateSlamPoseTexts();
+  drawSlamMap();
+}
+
+function updateSlamPoseTexts() {
+  const goal = selectedSlamGoal() || state.slam.goalPose;
+  setText("slamPickModeText", state.slam.pickMode === "start" ? "当前位置/起点" : (goal?.name || "目标点"));
+  setText("slamStartCoord", formatSlamPose(state.slam.startPose));
+  setText("slamGoalCoord", goal ? `${goal.name || "目标点"}：${formatSlamPose(goal)}` : "未设置");
+  $("slamPickStartBtn")?.classList.toggle("active", state.slam.pickMode === "start");
+  $("slamPickGoalBtn")?.classList.toggle("active", state.slam.pickMode === "goal");
+  renderSlamGoalList();
+}
+
+function setSlamPickMode(mode) {
+  state.slam.pickMode = mode === "goal" ? "goal" : "start";
+  if (state.slam.pickMode === "goal" && !selectedSlamGoal() && !state.slam.goals.length) {
+    createSlamGoal(currentSlamPose());
+  }
+  const selected = state.slam.pickMode === "goal" ? selectedSlamGoal() : state.slam.startPose;
+  if (selected) setSlamPoseInputs(selected);
+  updateSlamPoseTexts();
+  setText("slamMapHint", state.slam.pickMode === "start"
+    ? "当前是绿色当前位置/起点模式：在地图上点小车现在的位置。"
+    : "当前是目标点模式：可先选目标 A/B/C，再在地图上点要去的位置。");
+}
+
+async function sendSlamGoal() {
+  const goal = selectedSlamGoal() || state.slam.goalPose;
+  if (!goal) {
+    throw new Error("请先新增目标点，并在地图上选择小车要去的位置。");
+  }
+  const initialPose = state.slam.startPose || currentSlamPose();
+  state.slam.startPose = initialPose;
+  const result = await postJson("/api/slam/goal", {
+    id: goal.id || "slam_goal",
+    name: goal.name || "Web 目标点",
+    x: Number(goal.x || 0),
+    y: Number(goal.y || 0),
+    theta: Number(goal.theta || 0),
+    initial_pose: initialPose,
+    require_localized: true,
+  });
+  if (result.ok === false) {
+    throw new Error(result.message || "导航目标没有被 Nav2 接受。");
+  }
+  startSlamGoalMonitor(goal);
+  setText("slamDiagnosis", `已发送 ${goal.name}：(${Number(goal.x || 0).toFixed(2)}, ${Number(goal.y || 0).toFixed(2)})。到达后请重新确认绿色当前位置，再去下一个目标点。`);
+  return result;
+}
+
+function bindSlamEvents() {
+  ensureSlamGoalControls();
+  $("slamMapCanvas")?.addEventListener("click", handleSlamMapClick);
+  $("slamMapSelect")?.addEventListener("change", loadSelectedSlamMap);
+  $("slamRefreshMapsBtn")?.addEventListener("click", loadSlamMaps);
+  $("slamReloadMapBtn")?.addEventListener("click", loadSelectedSlamMap);
+  $("slamPickStartBtn")?.addEventListener("click", () => setSlamPickMode("start"));
+  $("slamPickGoalBtn")?.addEventListener("click", () => setSlamPickMode("goal"));
+  $("slamAddGoalBtn")?.addEventListener("click", () => {
+    const goal = createSlamGoal(currentSlamPose());
+    state.slam.pickMode = "goal";
+    setSlamPoseInputs(goal);
+    updateSlamPoseTexts();
+    drawSlamMap();
+    setText("slamMapHint", `已新增 ${goal.name}，请在地图上点击它的位置。`);
+  });
+  $("slamDeleteGoalBtn")?.addEventListener("click", deleteSelectedSlamGoal);
+  $("slamGoalSelect")?.addEventListener("change", () => selectSlamGoal($("slamGoalSelect")?.value || ""));
+  ["slamPoseX", "slamPoseY", "slamPoseTheta"].forEach((id) => {
+    $(id)?.addEventListener("change", applySlamPoseInputsToSelection);
+  });
+  $("slamSyncPoseBtn")?.addEventListener("click", () => runSlamAction("同步当前位姿", () => syncSlamPose(true)).catch(() => null));
+  $("slamRefreshStatusBtn")?.addEventListener("click", () => {
+    refreshSlamStatus();
+    refreshSlamLogs();
+  });
+  $("slamStartMappingBtn")?.addEventListener("click", () => runSlamAction("启动 SLAM 建图", () => (
+    postJson("/api/slam/mapping/start", { algorithm: "gmapping" })
+  )));
+  $("slamSaveMapBtn")?.addEventListener("click", () => runSlamAction("保存地图", async () => {
+    const name = $("slamMapNameInput")?.value || "yahboomcar_web";
+    const result = await postJson("/api/slam/map/save", { map_name: name });
+    await loadSlamMaps();
+    return result;
+  }));
+  $("slamStartNavBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("启动导航系统", async () => {
+      state.slam.initialPoseSent = false;
+      clearSlamGoalMonitor();
+      return postJson("/api/slam/navigation/start", {
+        algorithm: $("slamNavAlgorithm")?.value || "dwa",
+        map: $("slamMapSelect")?.value || "yahboomcar.yaml",
+      });
+    }).catch(() => null);
+  });
+  $("slamSetInitialBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("确认当前位置", sendSlamInitialPose).catch(() => null);
+  });
+  $("slamSendGoalBtn")?.addEventListener("click", (event) => {
+    event.stopImmediatePropagation();
+    runSlamAction("发送导航目标", sendSlamGoal).catch(() => null);
+  });
+  $("slamStopBtn")?.addEventListener("click", () => {
+    clearSlamGoalMonitor();
+    runSlamAction("停止 SLAM/导航", () => postJson("/api/slam/stop", {})).catch(() => null);
+  });
+  renderSlamGoalList();
+}
+
+function speakLocalCue(text) {
+  try {
+    if (!("speechSynthesis" in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-CN";
+    utterance.rate = 1;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  } catch (error) {
+    console.warn("local speech failed", error);
+  }
+}
+
+async function playVoiceCue() {
+  const text = "主人，我在";
+  const ok = await sendAuxControl("voice", { text });
+  if (!ok) {
+    speakLocalCue(text);
+    await sendAuxControl("buzzer", { duration_ms: 300 });
+  }
+}
+
 function bindEvents() {
   initConnectionInput();
   $("connectBtn")?.addEventListener("click", connect);
@@ -818,7 +1360,7 @@ function bindEvents() {
   $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
   $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
-  $("buzzerBtn")?.addEventListener("click", () => sendAuxControl("buzzer", { duration_ms: 300 }));
+  $("buzzerBtn")?.addEventListener("click", playVoiceCue);
   $("followLineBtn")?.addEventListener("click", toggleFollowLine);
   $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
   $("cameraNextBtn")?.addEventListener("click", () => {

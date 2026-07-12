@@ -578,11 +578,94 @@ select:focus {
 
 .map-toolbar,
 .inline-form,
-.two-buttons {
+.two-buttons,
+.slam-toolbar,
+.mode-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.slam-toolbar {
+  grid-template-columns: minmax(150px, 1fr) minmax(140px, 0.8fr) minmax(130px, 0.7fr) auto;
+}
+
+.mode-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.goal-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.goal-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.goal-item,
+.goal-empty {
+  min-height: 58px;
+  border: 1px solid rgba(120, 240, 255, 0.18);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(3, 9, 20, 0.58);
+}
+
+.goal-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+  padding: 10px;
+  text-align: left;
+}
+
+.goal-item.active {
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 22px rgba(38, 244, 255, 0.16);
+}
+
+.goal-swatch {
+  grid-row: span 2;
+  width: 12px;
+  height: 32px;
+  border-radius: 6px;
+}
+
+.goal-item strong,
+.goal-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-item small {
+  color: var(--muted);
+}
+
+.goal-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: var(--muted);
+}
+
+.mode-row .active,
+.neon-btn.active {
+  color: #04101a;
+  border-color: rgba(125, 255, 155, 0.9);
+  background: linear-gradient(135deg, var(--cyan), var(--lime));
+  font-weight: 800;
 }
 
 .step-grid {
@@ -657,6 +740,20 @@ select:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.speed-row.compact {
+  grid-template-columns: 44px 1fr 112px;
+  margin-bottom: 12px;
+}
+
+.neon-dpad.compact {
+  width: min(250px, 100%);
+  grid-template-rows: repeat(3, 56px);
+}
+
+.neon-dpad.compact button {
+  font-size: 24px;
 }
 
 .pose-grid label {
@@ -822,6 +919,10 @@ pre#slamLogs {
   .map-toolbar,
   .inline-form,
   .two-buttons,
+  .slam-toolbar,
+  .mode-row,
+  .goal-row,
+  .goal-list,
   .pose-grid,
   .step-grid,
   .slam-param-grid {

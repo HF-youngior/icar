@@ -122,7 +122,7 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "adapter": adapter.name,
         "project_root": str(PROJECT_ROOT),
-        "ui_version": "slam-navigation-v2",
+        "ui_version": "slam-navigation-v3",
     }
 
 
@@ -307,11 +307,27 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/control/aux")
 async def auxiliary_control(payload: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action", "")).lower()
-    if action not in {"light", "buzzer", "follow_line"}:
+    if action not in {"light", "buzzer", "follow_line", "voice"}:
         raise HTTPException(status_code=400, detail="Unsupported auxiliary action")
     try:
         values = {key: value for key, value in payload.items() if key != "action"}
-        result = await adapter.auxiliary_control(action, **values)
+        if config.car.adapter == "tcp" and action in {"light", "voice"}:
+            result = await asyncio.to_thread(runtime.auxiliary_control, action, **values)
+            if action == "light":
+                fallback = await adapter.auxiliary_control(action, **values)
+                result = {
+                    "ok": bool(result.get("ok")) or bool(fallback.get("ok")),
+                    "adapter": "ssh-rosmaster+tcp",
+                    "action": action,
+                    "runtime": result,
+                    "tcp": fallback,
+                }
+                if not result["ok"]:
+                    raise RuntimeError("light control failed")
+            elif not result.get("ok"):
+                raise RuntimeError(result.get("message") or result.get("stderr") or "voice control failed")
+        else:
+            result = await adapter.auxiliary_control(action, **values)
         await state.update_robot(
             connected=True,
             last_command=f"aux:{action}",
@@ -426,6 +442,11 @@ async def slam_start_navigation(payload: dict[str, Any] | None = None) -> dict[s
     map_name = str(body.get("map", "yahboomcar.yaml"))
     try:
         result = await asyncio.to_thread(slam_runtime.start_navigation, algorithm, map_name)
+        if not result.get("ok"):
+            message = result.get("message") or "Nav2 navigation did not become ready."
+            await state.update_navigation(state="error", progress=0, message=message, target=None, route=[])
+            await state.update_robot(mode="navigation_error", last_command=f"slam_nav:{algorithm}", last_error=message)
+            raise HTTPException(status_code=503, detail={"error": message, "nav2": result.get("nav2")})
         await state.update_navigation(
             state="nav_ready",
             progress=0,
@@ -435,6 +456,8 @@ async def slam_start_navigation(payload: dict[str, Any] | None = None) -> dict[s
         )
         await state.update_robot(mode="navigation_ready", last_command=f"slam_nav:{algorithm}", last_error=None)
         return result
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("slam navigation start failed")
         await state.add_alarm("slam", "warning", f"导航系统启动失败：{exc}", "backend")
@@ -447,12 +470,28 @@ async def slam_initial_pose(payload: dict[str, Any]) -> dict[str, Any]:
         x = float(payload.get("x", 0))
         y = float(payload.get("y", 0))
         theta = float(payload.get("theta", 0))
-        result = await asyncio.to_thread(slam_runtime.send_initial_pose, x, y, theta)
+        wait_sec = float(payload.get("wait_sec", 8))
+        result = await asyncio.to_thread(slam_runtime.send_initial_pose, x, y, theta, wait_sec)
         await state.update_robot(pose={"x": x, "y": y, "theta": theta}, last_command="slam_initial_pose", last_error=None)
-        await state.update_navigation(message=f"初始位姿已设置：({x:.2f}, {y:.2f})")
+        if not result.get("localized", {}).get("ok"):
+            await state.update_navigation(message="初始位姿已发布，但 AMCL 还没有回传当前位置")
+        else:
+            await state.update_navigation(message=f"初始位姿已确认：({x:.2f}, {y:.2f})")
         return result
     except Exception as exc:
         logger.exception("slam initial pose failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/slam/pose/current")
+async def slam_current_pose() -> dict[str, Any]:
+    try:
+        result = await asyncio.to_thread(slam_runtime.current_pose)
+        if result.get("ok") and result.get("pose"):
+            await state.update_robot(pose=result["pose"], last_command="slam_current_pose", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("slam current pose failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -462,15 +501,47 @@ async def slam_goal(payload: dict[str, Any]) -> dict[str, Any]:
         x = float(payload.get("x", 0))
         y = float(payload.get("y", 0))
         theta = float(payload.get("theta", 0))
+        goal_id = str(payload.get("id", "slam_goal"))[:80] or "slam_goal"
+        goal_name = str(payload.get("name", "Web 目标点"))[:80] or "Web 目标点"
+        initial_result: dict[str, Any] | None = None
+        initial_pose = payload.get("initial_pose")
+        require_localized = bool(payload.get("require_localized", False))
+
+        if isinstance(initial_pose, dict):
+            ix = float(initial_pose.get("x", 0))
+            iy = float(initial_pose.get("y", 0))
+            itheta = float(initial_pose.get("theta", 0))
+            initial_result = await asyncio.to_thread(slam_runtime.send_initial_pose, ix, iy, itheta, 10.0)
+            localized = initial_result.get("localized", {})
+            if require_localized and not localized.get("ok"):
+                message = localized.get("message") or "AMCL did not accept the initial pose yet; goal was not sent."
+                await state.update_navigation(state="nav_ready", message=f"当前位置未定位，目标点未发送：{message}")
+                raise HTTPException(status_code=409, detail=message)
+
+        current_pose = await asyncio.to_thread(slam_runtime.current_pose)
+        if require_localized and not current_pose.get("ok"):
+            message = current_pose.get("message") or "Current map pose is not available; goal was not sent."
+            await state.update_navigation(state="nav_ready", message=f"当前位置未定位，目标点未发送：{message}")
+            raise HTTPException(status_code=409, detail=message)
+
         result = await asyncio.to_thread(slam_runtime.send_goal_pose, x, y, theta)
+        if not result.get("ok"):
+            message = result.get("message") or "Navigation goal was not accepted by Nav2."
+            await state.update_navigation(state="error", progress=0, message=message)
+            await state.update_robot(mode="navigation_error", last_command="slam_goal", last_error=message)
+            raise HTTPException(status_code=502, detail={"error": message, "nav2": result.get("nav2")})
         await state.update_navigation(
             state="running",
-            target={"id": "slam_goal", "name": "Web 目标点", "pose": {"x": x, "y": y, "theta": theta}},
+            target={"id": goal_id, "name": goal_name, "pose": {"x": x, "y": y, "theta": theta}},
             progress=0,
             message=f"已发送导航目标：({x:.2f}, {y:.2f})",
         )
-        await state.update_robot(mode="navigation", target="Web 目标点", last_command="slam_goal", last_error=None)
+        await state.update_robot(mode="navigation", target=goal_name, last_command="slam_goal", last_error=None)
+        result["initial_pose"] = initial_result
+        result["current_pose"] = current_pose
         return result
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("slam goal failed")
         await state.add_alarm("slam", "warning", f"导航目标发送失败：{exc}", "backend")

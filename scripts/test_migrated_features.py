@@ -41,8 +41,10 @@ def check_tcp_frames() -> None:
     if light != "$01300A0026F4FF54#":
         raise AssertionError(f"unexpected light frame: {light}")
     light_frames = adapter._auxiliary_payloads("light", enabled=True, r=38, g=244, b=255)
-    if light_frames[:2] != ["$01300A0026F4FF54#", "$01300A0126F4FF55#"] or light_frames[-1] != "$013106015089#":
+    if light_frames[:2] != ["$01300A0026F4FF54#", "$01300A0126F4FF55#"] or "$013106015089#" not in light_frames:
         raise AssertionError(f"unexpected light frames: {light_frames}")
+    if "$0320080026F4FF44#" not in light_frames:
+        raise AssertionError(f"missing app-compatible light frame: {light_frames}")
 
 
 def check_api() -> None:
@@ -50,13 +52,16 @@ def check_api() -> None:
         health = client.get("/api/health")
         if health.status_code != 200 or not health.json().get("ok"):
             raise AssertionError(f"health failed: {health.text}")
-        if health.json().get("ui_version") != "slam-navigation-v2":
+        if health.json().get("ui_version") != "slam-navigation-v3":
             raise AssertionError(f"unexpected UI version: {health.text}")
 
         navigation_page = client.get("/navigation")
         page_text = navigation_page.text
-        if navigation_page.status_code != 200 or "SLAM Navigation v2" not in page_text:
-            raise AssertionError("navigation page is not the SLAM v2 page")
+        if navigation_page.status_code != 200 or "SLAM Navigation v3" not in page_text:
+            raise AssertionError("navigation page is not the SLAM v3 page")
+        for marker in ("点选当前位置/起点", "点选目标点", "建图遥控器"):
+            if marker not in page_text:
+                raise AssertionError(f"navigation page missing marker: {marker}")
         if "房间导航与巡逻" in page_text or "家庭地图" in page_text:
             raise AssertionError("navigation page still contains the old simulated navigation UI")
         if "no-store" not in navigation_page.headers.get("cache-control", ""):
@@ -76,6 +81,10 @@ def check_api() -> None:
         if aux.status_code != 200 or not aux.json().get("ok"):
             raise AssertionError(f"aux failed: {aux.text}")
 
+        voice = client.post("/api/control/aux", json={"action": "voice", "text": "主人，我在"})
+        if voice.status_code != 200 or not voice.json().get("ok"):
+            raise AssertionError(f"voice aux failed: {voice.text}")
+
         slam_status = client.get("/api/slam/status")
         if slam_status.status_code != 200 or "ports" not in slam_status.json():
             raise AssertionError(f"slam status failed: {slam_status.text}")
@@ -91,6 +100,31 @@ def check_slam_helpers() -> None:
     if "covariance" not in initial or "0.25000000" not in initial:
         raise AssertionError(f"unexpected initial pose message: {initial}")
 
+    amcl_text = """
+pose:
+  pose:
+    position:
+      x: 1.2
+      y: -0.4
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.70682518
+      w: 0.70738827
+  covariance:
+  - 0.0
+"""
+    parsed = manager._parse_amcl_pose(amcl_text)
+    if round(parsed["x"], 2) != 1.20 or round(parsed["y"], 2) != -0.40 or not 1.56 < parsed["theta"] < 1.58:
+        raise AssertionError(f"unexpected AMCL pose parse: {parsed}")
+
+    if manager._parse_action_server_count("Action servers: 1\n    /bt_navigator") != 1:
+        raise AssertionError("Nav2 action server parser failed")
+    nav2_failure = manager._nav2_failure_message("[ERROR] [bt_navigator-7]: process has died [pid 1, exit code -11]")
+    if "bt_navigator" not in nav2_failure:
+        raise AssertionError("Nav2 bt_navigator crash parser failed")
+
     tiny_pgm = b"P5\n2 2\n255\n\x00\x7f\xff\x40"
     png, width, height = manager._pgm_to_png(tiny_pgm)
     if width != 2 or height != 2 or not png.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -102,7 +136,7 @@ def main() -> None:
     check_slam_helpers()
     check_api()
     print("Migrated feature test passed.")
-    print("Checked: camera candidates, speed TCP frames, light, buzzer, follow-line, SLAM helpers.")
+    print("Checked: camera candidates, speed TCP frames, light, buzzer/voice, follow-line, SLAM helpers.")
 
 
 if __name__ == "__main__":

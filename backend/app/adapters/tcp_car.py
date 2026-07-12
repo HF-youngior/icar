@@ -170,6 +170,10 @@ class TcpCarAdapter(CarAdapter):
         effect = 1 if enabled else 0
         speed = 80 if enabled else 0
         payloads.append(self._encode_raw_frame([0x01, 0x31, 0x06, effect, speed]))
+        payloads.extend(
+            self._encode_raw_frame([0x03, 0x20, 0x08, int(led_id), *rgb])
+            for led_id in led_ids
+        )
         return payloads
 
     def _auxiliary_payload(self, action: str, **values: Any) -> str:
