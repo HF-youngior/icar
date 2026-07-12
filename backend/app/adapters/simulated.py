@@ -29,3 +29,5 @@ class SimulatedCarAdapter(CarAdapter):
     async def send_navigation_goal(self, point: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "adapter": self.name, "point": point.get("id")}
 
+    async def auxiliary_control(self, action: str, **values: Any) -> dict[str, Any]:
+        return {"ok": True, "adapter": self.name, "action": action, "values": values}

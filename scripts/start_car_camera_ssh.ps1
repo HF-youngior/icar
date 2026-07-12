@@ -3,19 +3,22 @@ param(
     [string]$CarUser = "jetson",
     [string]$Password = "yahboom",
     [string]$HostKey = "ssh-ed25519 255 SHA256:AJffjk3YWwStux7ZbdKdft3teC8b7Jsubuvv4zMYuD8",
-    [int]$Port = 6001,
-    [int]$Speed = 50,
-    [double]$PulseTimeoutSec = 0.45,
-    [switch]$SkipPortCheck
+    [int]$Port = 8080,
+    [string]$Device = "auto",
+    [int]$Width = 640,
+    [int]$Height = 480,
+    [int]$Fps = 12,
+    [int]$TimeoutMs = 2500
 )
 
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$BridgeFile = Join-Path $ProjectRoot "robot\rosmaster_tcp_bridge.py"
+$CameraFile = Join-Path $ProjectRoot "robot\camera_mjpeg_server.py"
 $Target = "${CarUser}@${CarHost}"
-$RemoteDir = "/home/$CarUser/Rosmaster-App/rosmaster"
-$RemoteBridgeFile = "$RemoteDir/icar_rosmaster_tcp_bridge.py"
+$RemoteFile = "/home/$CarUser/icar_camera_mjpeg_server.py"
+$RemoteLog = "/tmp/icar_camera_mjpeg_server.log"
+$RemotePid = "/tmp/icar_camera_mjpeg_server.pid"
 
 $UsePutty = -not [string]::IsNullOrWhiteSpace($Password)
 $SshExecutable = if ($UsePutty) { "C:\Program Files\PuTTY\plink.exe" } else { "ssh" }
@@ -65,8 +68,8 @@ function Invoke-External {
     }
 }
 
-function Copy-BridgeFile {
-    $CopyArgs = @($ScpOptions) + @($BridgeFile, "${Target}:${RemoteBridgeFile}")
+function Copy-CameraFile {
+    $CopyArgs = @($ScpOptions) + @($CameraFile, "${Target}:${RemoteFile}")
     Write-Host ">> $ScpExecutable $($CopyArgs -join ' ')" -ForegroundColor DarkGray
     & $ScpExecutable @CopyArgs
     if ($LASTEXITCODE -eq 0) {
@@ -77,10 +80,10 @@ function Copy-BridgeFile {
         throw "$ScpExecutable exited with code $LASTEXITCODE"
     }
 
-    Write-Host "pscp returned $LASTEXITCODE, verifying remote file before failing..." -ForegroundColor Yellow
-    & $SshExecutable @(@($SshOptions) + @($Target, "test -s $(Quote-Bash($RemoteBridgeFile))"))
+    Write-Host "pscp returned $LASTEXITCODE, verifying remote camera file before failing..." -ForegroundColor Yellow
+    & $SshExecutable @(@($SshOptions) + @($Target, "test -s $(Quote-Bash($RemoteFile))"))
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Remote file exists; continuing despite pscp exit code." -ForegroundColor Yellow
+        Write-Host "Remote camera file exists; continuing despite pscp exit code." -ForegroundColor Yellow
         return
     }
 
@@ -91,13 +94,13 @@ function Test-TcpPortFast {
     param(
         [string]$HostName,
         [int]$TargetPort,
-        [int]$TimeoutMs = 3000
+        [int]$ConnectTimeoutMs
     )
 
     $Client = [System.Net.Sockets.TcpClient]::new()
     try {
-        $ConnectTask = $Client.ConnectAsync($HostName, $TargetPort)
-        if (-not $ConnectTask.Wait($TimeoutMs)) {
+        $Task = $Client.ConnectAsync($HostName, $TargetPort)
+        if (-not $Task.Wait($ConnectTimeoutMs)) {
             return $false
         }
         return $Client.Connected
@@ -110,45 +113,48 @@ function Test-TcpPortFast {
     }
 }
 
-if (-not (Test-Path $BridgeFile)) {
-    throw "Bridge file not found: $BridgeFile"
+if (-not (Test-Path $CameraFile)) {
+    throw "Camera server file not found: $CameraFile"
 }
 
-Write-Host "iCar Rosmaster SSH bridge setup" -ForegroundColor Cyan
-Write-Host "Backup path only. Prefer the built-in 6000 service when it is open." -ForegroundColor Yellow
+Write-Host "iCar camera MJPEG setup" -ForegroundColor Cyan
 Write-Host "Car:       $Target"
-Write-Host "Remote:    $RemoteBridgeFile"
+Write-Host "Remote:    $RemoteFile"
 Write-Host "Port:      $Port"
-Write-Host "Speed:     $Speed"
-Write-Host "Pulse stop: ${PulseTimeoutSec}s"
+Write-Host "Device:    $Device"
 Write-Host ""
 
-Copy-BridgeFile
+Copy-CameraFile
 
-$KillScript = "pkill -f '[i]car_rosmaster_tcp_bridge.py' || true; pkill -f '[r]osmaster_test.py' || true"
-$StartScript = "cd $(Quote-Bash($RemoteDir)) && setsid python3 $(Quote-Bash($RemoteBridgeFile)) --host 0.0.0.0 --port $Port --speed $Speed --pulse-timeout-sec $PulseTimeoutSec </dev/null > /tmp/icar_rosmaster_tcp_bridge.log 2>&1 & echo `$! > /tmp/icar_rosmaster_tcp_bridge.pid || true; exit 0"
+$StopScript = @(
+    "if test -f $(Quote-Bash($RemotePid)); then",
+    "oldpid=`$(cat $(Quote-Bash($RemotePid)) 2>/dev/null || true);",
+    "if test -n `"`$oldpid`" && ps -p `"`$oldpid`" -o args= 2>/dev/null | grep -q 'icar_camera_mjpeg_server.py'; then kill `"`$oldpid`" 2>/dev/null || true; fi;",
+    "rm -f $(Quote-Bash($RemotePid));",
+    "fi"
+) -join " "
 
-Invoke-External $SshExecutable (@($SshOptions) + @($Target, "bash -lc $(Quote-Bash($KillScript))"))
+$StartScript = @(
+    $StopScript,
+    "python3 -m py_compile $(Quote-Bash($RemoteFile))",
+    "setsid python3 $(Quote-Bash($RemoteFile)) --host 0.0.0.0 --port $Port --device $(Quote-Bash($Device)) --width $Width --height $Height --fps $Fps </dev/null > $(Quote-Bash($RemoteLog)) 2>&1 & echo `$! > $(Quote-Bash($RemotePid))",
+    "exit 0"
+) -join "; "
+
 Invoke-External $SshExecutable (@($SshOptions) + @($Target, "bash -lc $(Quote-Bash($StartScript))"))
 
-Write-Host "Started Rosmaster TCP bridge. Log: /tmp/icar_rosmaster_tcp_bridge.log" -ForegroundColor Green
-
-if (-not $SkipPortCheck) {
-    Start-Sleep -Seconds 1
-    if (Test-TcpPortFast -HostName $CarHost -TargetPort $Port) {
-        Write-Host "Port check passed: ${CarHost}:${Port}" -ForegroundColor Green
-    }
-    else {
-        Write-Host "Port check failed: ${CarHost}:${Port}" -ForegroundColor Yellow
-        Write-Host "Inspect logs with:" -ForegroundColor Yellow
-        Write-Host "ssh $Target `"tail -n 80 /tmp/icar_rosmaster_tcp_bridge.log`"" -ForegroundColor Yellow
-    }
+Start-Sleep -Seconds 2
+if (Test-TcpPortFast -HostName $CarHost -TargetPort $Port -ConnectTimeoutMs $TimeoutMs) {
+    Write-Host "Port check passed: ${CarHost}:${Port}" -ForegroundColor Green
+    Write-Host "Vision URL: http://${CarHost}:${Port}/?action=stream" -ForegroundColor Green
+}
+else {
+    Write-Host "Port check failed: ${CarHost}:${Port}" -ForegroundColor Yellow
+    Write-Host "Inspect car camera log with:" -ForegroundColor Yellow
+    Write-Host "ssh $Target `"tail -n 80 $RemoteLog`"" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "Next, start the local backend:" -ForegroundColor Cyan
+Write-Host "Next:" -ForegroundColor Cyan
 Write-Host "cd $ProjectRoot"
-Write-Host '$env:ICAR_CAR_ADAPTER="tcp"'
-Write-Host "`$env:ICAR_CAR_HOST=`"$CarHost`""
-Write-Host "`$env:ICAR_CAR_PORT=`"$Port`""
-Write-Host ".\scripts\start_backend.ps1"
+Write-Host ".\scripts\check_car_connection.ps1 -CarHost `"$CarHost`""

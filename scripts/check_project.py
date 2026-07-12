@@ -30,8 +30,12 @@ def main() -> None:
         ROOT / "docs" / "database.md",
         ROOT / "docs" / "car-connection.md",
         ROOT / "scripts" / "db_check.py",
+        ROOT / "scripts" / "check_car_connection.ps1",
+        ROOT / "scripts" / "start_backend_car_ssh.ps1",
+        ROOT / "scripts" / "start_car_camera_ssh.ps1",
         ROOT / "vision" / "train_yolov5.py",
         ROOT / "vision" / "infer_yolov5.py",
+        ROOT / "robot" / "camera_mjpeg_server.py",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
