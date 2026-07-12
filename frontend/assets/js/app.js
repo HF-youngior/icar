@@ -378,10 +378,8 @@ async function sendAuxControl(action, payload = {}) {
   try {
     const result = await postJson("/api/control/aux", { action, ...payload });
     let message = `已执行 ${action} · ${result.adapter || "tcp"}`;
-    if (action === "voice") {
-      message = result.spoken
-        ? `小车已语音回应 · ${result.engine || "voice"}`
-        : `小车语音不可用，已退回提示音 · ${result.engine || "beep"}`;
+    if (action === "buzzer") {
+      message = "短蜂鸣已发送";
     } else if (action === "light" && result.runtime) {
       const sshOk = result.runtime?.ok ? "SSH灯控OK" : "SSH灯控未确认";
       const tcpOk = result.tcp?.ok ? "TCP帧OK" : "TCP帧未确认";
@@ -1342,13 +1340,8 @@ function speakLocalCue(text) {
   }
 }
 
-async function playVoiceCue() {
-  const text = "主人，我在";
-  const ok = await sendAuxControl("voice", { text });
-  if (!ok) {
-    speakLocalCue(text);
-    await sendAuxControl("buzzer", { duration_ms: 300 });
-  }
+async function playBuzzerCue() {
+  await sendAuxControl("buzzer", { duration_ms: 260 });
 }
 
 function bindEvents() {
@@ -1360,7 +1353,7 @@ function bindEvents() {
   $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
   $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
-  $("buzzerBtn")?.addEventListener("click", playVoiceCue);
+  $("buzzerBtn")?.addEventListener("click", playBuzzerCue);
   $("followLineBtn")?.addEventListener("click", toggleFollowLine);
   $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
   $("cameraNextBtn")?.addEventListener("click", () => {

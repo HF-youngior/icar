@@ -81,10 +81,6 @@ def check_api() -> None:
         if aux.status_code != 200 or not aux.json().get("ok"):
             raise AssertionError(f"aux failed: {aux.text}")
 
-        voice = client.post("/api/control/aux", json={"action": "voice", "text": "主人，我在"})
-        if voice.status_code != 200 or not voice.json().get("ok"):
-            raise AssertionError(f"voice aux failed: {voice.text}")
-
         slam_status = client.get("/api/slam/status")
         if slam_status.status_code != 200 or "ports" not in slam_status.json():
             raise AssertionError(f"slam status failed: {slam_status.text}")
@@ -136,7 +132,7 @@ def main() -> None:
     check_slam_helpers()
     check_api()
     print("Migrated feature test passed.")
-    print("Checked: camera candidates, speed TCP frames, light, buzzer/voice, follow-line, SLAM helpers.")
+    print("Checked: camera candidates, speed TCP frames, light, buzzer, follow-line, SLAM helpers.")
 
 
 if __name__ == "__main__":

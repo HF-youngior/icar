@@ -510,7 +510,7 @@ command from ('192.168.137.1', 端口): forward
 
 1. 速度控制：Web 遥控页的速度滑块不再只是前端显示。后端会先发送速度帧，再发送前进/后退/转向帧。
 2. 摄像头流：视觉页现在默认使用小车原生 App 直连 `http://小车IP:6500/video_feed`，打开最快；自建 `http://小车IP:8080/?action=stream` 和后端代理 `/api/camera/stream?...` 作为备用。
-3. 外设与模式：遥控页新增灯光、语音回应、循迹按钮。灯光会优先通过 SSH 在小车上直接调用 `Rosmaster_Lib.set_colorful_lamps`，并同时发送 `0x30/0x31` 和学长学姐 App 中的 `0x20` 兼容帧；语音回应默认播放“主人，我在”，优先走车端 `spd-say --wait`，若车端语音不可用则退回提示音。
+3. 外设与模式：遥控页新增灯光、短蜂鸣、循迹按钮。灯光会优先通过 SSH 在小车上直接调用 `Rosmaster_Lib.set_colorful_lamps`，并同时发送 `0x30/0x31` 和学长学姐 App 中的 `0x20` 兼容帧；短蜂鸣直接走小车蜂鸣器协议，适合现场确认指令已经发到小车。
 
 ### 13.1 真车使用流程
 
@@ -572,7 +572,7 @@ python .\scripts\test_migrated_features.py
 
 ```text
 Migrated feature test passed.
-Checked: camera candidates, speed TCP frames, light, buzzer/voice, follow-line, SLAM helpers.
+Checked: camera candidates, speed TCP frames, light, buzzer, follow-line, SLAM helpers.
 ```
 
 ## 14. 实车 SLAM 建图与自动导航（yyh 分支）
