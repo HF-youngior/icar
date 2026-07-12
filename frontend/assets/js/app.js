@@ -3,7 +3,17 @@ const state = {
   ws: null,
   connected: false,
   manualHoldTimer: null,
+  manualStopTimer: null,
   manualDirection: null,
+  manualStopInFlight: false,
+  lastManualStopAt: 0,
+  camera: {
+    candidates: [],
+    index: 0,
+    attempts: 0,
+    active: false,
+    currentUrl: "",
+  },
   snapshot: {
     robot: {},
     navigation: {},
@@ -95,8 +105,21 @@ async function postJson(url, payload = {}) {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `request failed: ${response.status}`);
+    let message = `request failed: ${response.status}`;
+    const text = await response.text().catch(() => "");
+    try {
+      const data = text ? JSON.parse(text) : {};
+      if (typeof data.detail === "string") {
+        message = data.detail;
+      } else if (data.detail?.error) {
+        message = data.detail.error;
+      } else if (data.error) {
+        message = data.error;
+      }
+    } catch {
+      if (text) message = text;
+    }
+    throw new Error(message);
   }
   return response.json().catch(() => ({}));
 }
@@ -203,7 +226,7 @@ function renderVisionPage() {
     const latest = events[0];
     setText("visionSummary", `${latest.label_zh || latest.label} · ${Math.round((latest.confidence || 0) * 100)}%`);
     const image = $("visionImage");
-    if (image && latest.image_url) image.src = latest.image_url;
+    if (image && latest.image_url && !state.camera.active) image.src = latest.image_url;
   }
   if (list) {
     list.innerHTML = events.length
@@ -389,25 +412,35 @@ function bindEvents() {
   initConnectionInput();
   $("connectBtn")?.addEventListener("click", connect);
   $("disconnectBtn")?.addEventListener("click", disconnect);
-  $("estopBtn")?.addEventListener("click", () => send("emergency_stop", { reason: "web" }));
+  $("estopBtn")?.addEventListener("click", emergencyStop);
   $("reconnectCarBtn")?.addEventListener("click", reconnectCar);
-  $("stopTaskBtn")?.addEventListener("click", () => send("task_stop", {}));
+  $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
   $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
-  $("speedRange")?.addEventListener("input", () => {
-    setText("speedValue", `${Number($("speedRange").value).toFixed(2)} m/s`);
+  $("lightToggleBtn")?.addEventListener("click", toggleLight);
+  $("buzzerBtn")?.addEventListener("click", () => sendAuxControl("buzzer", { duration_ms: 300 }));
+  $("followLineBtn")?.addEventListener("click", toggleFollowLine);
+  $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
+  $("cameraNextBtn")?.addEventListener("click", () => {
+    state.camera.attempts = 0;
+    startCameraNext();
   });
+  $("cameraStopBtn")?.addEventListener("click", stopCamera);
+  $("cameraSelect")?.addEventListener("change", () => {
+    state.camera.attempts = 0;
+    startCameraAt(Number($("cameraSelect").value || 0));
+  });
+  $("speedRange")?.addEventListener("input", updateSpeedDisplay);
+  updateSpeedDisplay();
   document.querySelectorAll(".neon-dpad button").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
+    button.addEventListener("click", (event) => {
       event.preventDefault();
-      button.setPointerCapture?.(event.pointerId);
-      startManualHold(button.dataset.dir);
+      sendManualPulse(button.dataset.dir);
     });
-    button.addEventListener("pointerup", () => endManualHold(true));
-    button.addEventListener("pointercancel", () => endManualHold(true));
-    button.addEventListener("lostpointercapture", () => endManualHold(true));
   });
-  window.addEventListener("pointerup", () => endManualHold(true));
-  window.addEventListener("blur", () => endManualHold(true));
+  window.addEventListener("blur", () => sendStopNow());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) sendStopNow();
+  });
 }
 
 async function loadSnapshot() {
@@ -422,21 +455,186 @@ async function loadSnapshot() {
 
 async function reconnectCar() {
   const button = $("reconnectCarBtn");
-  if (button) button.textContent = "重连中...";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "重连中...";
+  }
+  setText("robotError", "正在通过 SSH 恢复小车服务...");
+  setText("cameraStatus", "正在恢复小车摄像头服务...");
   try {
-    await fetch("/api/car/reconnect", { method: "POST" });
+    const result = await postJson("/api/car/reconnect", {});
+    const ports = result.runtime?.after || {};
+    const cameraReady = ports.camera_6500 || ports.camera_8080;
+    setText("robotError", `重连成功：6000=${ports.control_6000 ? "open" : "--"}，6500=${ports.camera_6500 ? "open" : "--"}，8080=${ports.camera_8080 ? "open" : "--"}`);
+    setText("cameraStatus", cameraReady ? "小车摄像头服务已恢复" : "小车摄像头端口未打开");
+    if (page === "vision") {
+      await loadCameraCandidates();
+      startCameraAuto();
+    }
   } catch (error) {
     console.warn("car reconnect failed", error);
+    setText("robotError", `重连失败：${error.message || error}`);
   } finally {
-    if (button) button.textContent = "重连小车";
+    if (button) {
+      button.disabled = false;
+      button.textContent = "重连小车";
+    }
     await loadSnapshot();
   }
 }
 
-async function sendManualHttp(direction) {
-  const speed = Number($("speedRange")?.value || 0.16);
+function currentSpeed() {
+  return Number($("speedRange")?.value || 0.16);
+}
+
+function speedPercent(speed = currentSpeed()) {
+  return Math.max(0, Math.min(100, Math.round((speed / 0.32) * 100)));
+}
+
+function updateSpeedDisplay() {
+  const speed = currentSpeed();
+  setText("speedValue", `${speed.toFixed(2)} m/s · ${speedPercent(speed)}%`);
+}
+
+async function sendAuxControl(action, payload = {}) {
+  setText("auxResult", "发送中...");
   try {
-    await postJson("/api/control/manual", { direction, speed });
+    const result = await postJson("/api/control/aux", { action, ...payload });
+    setText("auxResult", `已执行 ${action} · ${result.adapter || "tcp"}`);
+    await loadSnapshot();
+    return true;
+  } catch (error) {
+    console.warn("aux control failed", error);
+    setText("auxResult", `发送失败：${error.message || error}`);
+    return false;
+  }
+}
+
+async function toggleLight() {
+  const button = $("lightToggleBtn");
+  const enabled = button?.dataset.enabled !== "true";
+  const ok = await sendAuxControl("light", {
+    enabled,
+    r: enabled ? 38 : 0,
+    g: enabled ? 244 : 0,
+    b: enabled ? 255 : 0,
+  });
+  if (ok && button) {
+    button.dataset.enabled = String(enabled);
+    button.classList.toggle("active", enabled);
+  }
+}
+
+async function toggleFollowLine() {
+  const button = $("followLineBtn");
+  const enabled = button?.dataset.enabled !== "true";
+  if (enabled) {
+    sendStopNow();
+  }
+  const ok = await sendAuxControl("follow_line", { enabled });
+  if (ok && button) {
+    button.dataset.enabled = String(enabled);
+    button.classList.toggle("active", enabled);
+  }
+}
+
+async function loadCameraCandidates() {
+  const select = $("cameraSelect");
+  if (!select) return;
+  try {
+    const response = await fetch("/api/camera/candidates");
+    const data = await response.json();
+    state.camera.candidates = data.urls || [];
+    select.innerHTML = state.camera.candidates.map((candidate, index) => (
+      `<option value="${index}">${escapeHtml(candidate.label)}</option>`
+    )).join("");
+    setText("cameraStatus", state.camera.candidates.length ? "摄像头地址已加载" : "未找到候选地址");
+  } catch (error) {
+    console.warn("camera candidates failed", error);
+    setText("cameraStatus", "摄像头地址加载失败");
+  }
+}
+
+function startCameraAuto() {
+  state.camera.attempts = 0;
+  if (!state.camera.candidates.length) {
+    loadCameraCandidates().then(() => startCameraAt(0));
+    return;
+  }
+  startCameraAt(0);
+}
+
+function startCameraNext() {
+  const count = state.camera.candidates.length;
+  if (!count) {
+    startCameraAuto();
+    return;
+  }
+  state.camera.attempts += 1;
+  if (state.camera.attempts >= count) {
+    state.camera.active = false;
+    setText("cameraStatus", "摄像头未响应");
+    const image = $("visionImage");
+    if (image) {
+      image.onload = null;
+      image.onerror = null;
+      image.src = "/assets/sample-detection.svg";
+    }
+    return;
+  }
+  startCameraAt((state.camera.index + 1) % count);
+}
+
+function startCameraAt(index) {
+  const image = $("visionImage");
+  const candidate = state.camera.candidates[index];
+  if (!image || !candidate) return;
+  state.camera.index = index;
+  state.camera.active = true;
+  state.camera.currentUrl = candidate.url;
+  const select = $("cameraSelect");
+  if (select) select.value = String(index);
+  setText("cameraStatus", `连接中：${candidate.label}`);
+  image.onload = () => setText("cameraStatus", `已连接：${candidate.label}`);
+  image.onerror = () => {
+    setText("cameraStatus", `${candidate.label} 无响应，尝试下一个`);
+    if (state.camera.active && state.camera.currentUrl === candidate.url) {
+      window.setTimeout(startCameraNext, 200);
+    }
+  };
+  image.src = withCacheBust(candidate.url);
+  window.setTimeout(() => {
+    if (state.camera.active && state.camera.currentUrl === candidate.url) {
+      setText("cameraStatus", `正在尝试：${candidate.label}`);
+    }
+  }, 1500);
+}
+
+function withCacheBust(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}_=${Date.now()}`;
+}
+
+function stopCamera() {
+  const image = $("visionImage");
+  state.camera.active = false;
+  state.camera.currentUrl = "";
+  if (image) {
+    image.onload = null;
+    image.onerror = null;
+    image.src = "/assets/sample-detection.svg";
+  }
+  setText("cameraStatus", "摄像头已停止");
+}
+
+async function sendManualHttp(direction) {
+  const speed = currentSpeed();
+  const payload = { direction, speed };
+  if (direction !== "stop") {
+    payload.duration_ms = 260;
+  }
+  try {
+    await postJson("/api/control/manual", payload);
   } catch (error) {
     console.warn("manual control failed", error);
   }
@@ -446,6 +644,10 @@ function clearManualHold() {
   if (state.manualHoldTimer) {
     clearInterval(state.manualHoldTimer);
     state.manualHoldTimer = null;
+  }
+  if (state.manualStopTimer) {
+    clearTimeout(state.manualStopTimer);
+    state.manualStopTimer = null;
   }
 }
 
@@ -458,22 +660,53 @@ function endManualHold(sendStop = true) {
   }
 }
 
-function startManualHold(direction) {
+async function sendStopNow(force = false) {
+  const now = Date.now();
+  if (!force && (state.manualStopInFlight || now - state.lastManualStopAt < 450)) {
+    return;
+  }
+  state.lastManualStopAt = now;
+  state.manualStopInFlight = true;
+  clearManualHold();
+  state.manualDirection = null;
+  try {
+    await sendManualHttp("stop");
+  } finally {
+    state.manualStopInFlight = false;
+  }
+}
+
+function emergencyStop() {
+  clearManualHold();
+  state.manualDirection = null;
+  postJson("/api/control/emergency-stop", { reason: "web" }).catch((error) => {
+    console.warn("emergency stop failed", error);
+  });
+  sendStopNow(true);
+}
+
+function stopNavigationTask() {
+  sendStopNow();
+  send("task_stop", {});
+  postJson("/api/navigation/stop", {}).catch((error) => {
+    console.warn("navigation stop failed", error);
+  });
+}
+
+function sendManualPulse(direction) {
   if (!direction) return;
   if (direction === "stop") {
-    endManualHold(false);
-    sendManualHttp("stop");
+    sendStopNow();
     return;
   }
-  if (state.manualDirection === direction && state.manualHoldTimer) {
-    return;
-  }
-  endManualHold(false);
+  clearManualHold();
   state.manualDirection = direction;
   sendManualHttp(direction);
-  state.manualHoldTimer = window.setInterval(() => {
-    sendManualHttp(direction);
-  }, 180);
+  state.manualStopTimer = window.setTimeout(() => {
+    if (state.manualDirection === direction) {
+      sendStopNow();
+    }
+  }, 260);
 }
 
 function escapeHtml(value) {
@@ -484,5 +717,14 @@ function escapeHtml(value) {
     .replaceAll("\"", "&quot;");
 }
 
+async function initPage() {
+  await loadSnapshot();
+  if (page === "vision") {
+    await loadCameraCandidates();
+    startCameraAuto();
+  }
+  connect();
+}
+
 bindEvents();
-loadSnapshot().then(connect);
+initPage();

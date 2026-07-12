@@ -12,6 +12,38 @@ $HostValue = if ($env:ICAR_HOST) { $env:ICAR_HOST } else { "0.0.0.0" }
 $PortValue = if ($env:ICAR_PORT) { $env:ICAR_PORT } else { "8000" }
 $ReloadArgs = if ($env:ICAR_RELOAD -eq "1") { @("--reload") } else { @() }
 
+function Get-ListeningProcessOnPort {
+    param([int]$TargetPort)
+
+    try {
+        $Connection = Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction Stop |
+            Select-Object -First 1
+        if (-not $Connection) {
+            return $null
+        }
+        $Process = Get-Process -Id $Connection.OwningProcess -ErrorAction SilentlyContinue
+        return [PSCustomObject]@{
+            Id = $Connection.OwningProcess
+            Name = if ($Process) { $Process.ProcessName } else { "unknown" }
+            Path = if ($Process) { $Process.Path } else { "" }
+        }
+    }
+    catch {
+        $Line = netstat -ano | Select-String ":$TargetPort\s+.*LISTENING" | Select-Object -First 1
+        if (-not $Line) {
+            return $null
+        }
+        $Parts = ($Line.ToString() -split "\s+") | Where-Object { $_ }
+        $PidText = $Parts[-1]
+        $Process = Get-Process -Id ([int]$PidText) -ErrorAction SilentlyContinue
+        return [PSCustomObject]@{
+            Id = [int]$PidText
+            Name = if ($Process) { $Process.ProcessName } else { "unknown" }
+            Path = if ($Process) { $Process.Path } else { "" }
+        }
+    }
+}
+
 function Get-LocalIpv4Candidates {
     $Entries = @()
     try {
@@ -46,6 +78,20 @@ Write-Host "iCar backend starting..." -ForegroundColor Cyan
 Write-Host "Bind host: $HostValue" -ForegroundColor Gray
 Write-Host "Bind port: $PortValue" -ForegroundColor Gray
 Write-Host ""
+
+$Existing = Get-ListeningProcessOnPort -TargetPort ([int]$PortValue)
+if ($Existing) {
+    Write-Host "Port $PortValue is already in use by PID $($Existing.Id) ($($Existing.Name))." -ForegroundColor Red
+    if ($Existing.Path) {
+        Write-Host "Process path: $($Existing.Path)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Host "Close the old backend window, or run this in PowerShell:" -ForegroundColor Yellow
+    Write-Host "  Stop-Process -Id $($Existing.Id)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Then start the backend again." -ForegroundColor Yellow
+    exit 1
+}
 
 if ($HostValue -eq "0.0.0.0") {
     Write-Host "Local access:" -ForegroundColor Green

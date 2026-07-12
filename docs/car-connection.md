@@ -5,15 +5,15 @@
 现在不再把 NoMachine 作为主流程。已经实测可用的推荐方式是：
 
 1. 电脑和小车连接同一个热点或同一个局域网。
-2. 确认小车原生 Rosmaster 控制服务 `6000` 端口可用。
-3. 本地启动 Web 后端，网页通过 TCP 连接小车 `6000` 端口。
+2. 先检查控制端口：优先用 `6000`，如果 `6000 closed` 但 `6001 open`，就用我们的备用 Rosmaster 桥接 `6001`。
+3. 本地启动 Web 后端，网页通过当前可用的 TCP 控制端口连接小车。
 4. 手机、电脑、小车在同一个热点时，手机也可以打开电脑打印出的局域网网址进行控制。
 
 这样做的好处是：
 
 - 不需要一直开 NoMachine 桌面。
 - 不依赖固定 Docker 容器 ID，例如之前的 `549b`。
-- Web 遥控优先复用小车自带 `app` 控制链路，和在 NoMachine 里运行小车自带 app 的思路一致。
+- Web 遥控优先复用可用控制链路：`6000` 能用就连 `6000`，否则使用已经启动的 `6001` 自建桥接。
 - 组员只需要 PowerShell、浏览器和同一局域网，就能重复操作。
 
 ## 2. 为什么以前的 `549b` 不可靠
@@ -34,10 +34,21 @@ Docker 容器 ID 不是固定值。只要小车重新创建过容器、恢复过
 - 小车 IP：当前热点下以小车屏幕/终端显示为准，例如本次实测为 `192.168.137.173`
 - 小车用户名：`jetson`
 - 小车密码：`yahboom`
-- Web 手动遥控优先连接小车原生 Rosmaster/app 控制端口 `6000`
+- Web 手动遥控优先连接 `6000`，如果 `6000 closed` 且 `6001 open`，就连接 `6001`
 - Docker/ROS2 容器方案仍保留，用于后续 SLAM、建图、导航链路联调
 
 如果 IP 改了，只要把命令里的 `192.168.137.173` 换成当前 IP 即可。
+
+### 3.1 当前端口约定
+
+| 端口 | 用途 | 是否默认使用 |
+| --- | --- | --- |
+| `22` | SSH 登录小车，用于脚本启动小车端服务 | 必须可通 |
+| `6000` | 小车原生 Rosmaster/App 控制端口，Web 遥控默认连接这里 | 默认控制端口 |
+| `6001` | 我们自建 Rosmaster 备用桥接端口 | 仅当 `6000 closed` 时备用 |
+| `6500` | 小车原生 App 实时画面，路径 `/video_feed` | 默认视觉画面 |
+| `8080` | 我们自建 MJPEG 备用摄像头，路径 `/?action=stream` | 仅当 `6500` 不稳定时备用 |
+| `8000` | 电脑本地 Web 后端端口，手机也访问电脑这个端口 | Web 页面端口 |
 
 ## 4. 推荐操作流程
 
@@ -50,25 +61,101 @@ cd F:\北交大2周项目\icar-smart-home
 .\scripts\check_car_connection.ps1 -CarHost "192.168.137.173"
 ```
 
-正常情况下，手动遥控至少需要看到：
+手动遥控至少需要看到 `6000 open` 或 `6001 open` 其中一个：
 
 ```text
 22    open   SSH login
 6000  open   Built-in Rosmaster app control
 ```
 
-其中 `6000` 是当前 Web 遥控优先使用的端口。`6001` 是我们自建 Rosmaster 桥接的备用端口，关闭也不影响当前主流程。
+如果当前结果是：
 
-### 4.2 启动本地 Web 后端
+```text
+6000  closed
+6001  open
+```
 
-确认 `6000` 端口打开后，执行：
+也可以直接用 `6001` 启动后端。`6001` 是我们自建 Rosmaster 桥接，已经能接 Web 遥控指令。
+
+### 4.2 根据检查结果启动本地 Web 后端
+
+如果 `6000 open`，执行：
 
 ```powershell
 cd F:\北交大2周项目\icar-smart-home
 .\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6000
 ```
 
-然后电脑浏览器打开：
+如果 `6000 closed` 但 `6001 open`，执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6001
+```
+
+如果 `6000` 和 `6001` 都是 closed，先启动备用桥接：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_car_rosmaster_bridge_ssh.ps1 -CarHost "192.168.137.173"
+```
+
+然后重新检查，看到 `6001 open` 后，用 `6001` 启动后端。
+
+### 4.3 视觉画面端口
+
+当前 Web 视觉页默认使用小车原生 App 的 `6500` 实时画面：
+
+```text
+http://小车IP:6500/video_feed
+```
+
+如果 `6500` 不稳定或暂时没有画面，页面会自动尝试自建 `8080` 备用摄像头流：
+
+```text
+http://小车IP:8080/?action=stream
+```
+
+如果手机或浏览器不能直连小车，会继续尝试后端代理地址：
+
+```text
+/api/camera/stream?host=小车IP&port=6500&path=%2Fvideo_feed
+```
+
+如果 `8080 closed` 且 `6500` 画面不稳定，可以在电脑 PowerShell 里执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_car_camera_ssh.ps1 -CarHost "192.168.137.173"
+```
+
+这个脚本会通过 SSH 把项目里的轻量 MJPEG 服务复制到小车并启动：
+
+```text
+robot/camera_mjpeg_server.py -> /home/jetson/icar_camera_mjpeg_server.py
+```
+
+启动后再检查一次：
+
+```powershell
+.\scripts\check_car_connection.ps1 -CarHost "192.168.137.173"
+```
+
+备用服务启动成功后应看到 `8080 open`。备用直连地址是：
+
+```text
+http://小车IP:8080/?action=stream
+```
+
+如果 `8080` open 但只有 1x1 占位图，通常是原生 `app.py` 已占用 `/dev/video0`，这时优先使用 `6500/video_feed`。如果 `8080` 仍然 closed，需要看脚本提示的 `/tmp/icar_camera_mjpeg_server.log`。
+
+如果想试小车自带的 Flask/camera 服务，也可以再执行：
+
+```powershell
+.\scripts\start_car_builtin_app_ssh.ps1 -CarHost "192.168.137.173"
+```
+
+后端启动成功后，电脑浏览器打开：
 
 ```text
 http://127.0.0.1:8000/control
@@ -82,7 +169,7 @@ http://192.168.137.1:8000/control
 
 把这条网址发到手机微信里，手机和电脑、小车在同一个热点时，手机点开就可以控制小车。
 
-### 4.3 查看当前有哪些 Docker 容器
+### 4.4 查看当前有哪些 Docker 容器
 
 热点重新连上后，在项目根目录执行：
 
@@ -258,7 +345,7 @@ cd F:\北交大2周项目\icar-smart-home
 .\scripts\check_car_connection.ps1 -CarHost "192.168.137.173"
 ```
 
-只要看到 `6000 open`，就可以直接启动 Web 后端。`6001` 是备用桥接端口，关闭不影响当前手动遥控主流程。
+只要看到 `6000 open` 或 `6001 open`，就可以按检查脚本推荐的端口启动 Web 后端。
 
 5. 然后在另一个 PowerShell 启动本地后端：
 
@@ -324,7 +411,7 @@ http://192.168.137.1:8000/control
 
 ## 12. 推荐：不用 Docker 的 Rosmaster SSH 桥接
 
-如果只是要让 Web 控制小车前进、后退、左转、右转和停止，优先使用小车原生 `6000` 端口。下面的自建 `6001` Rosmaster 桥接作为备用方案保留。
+如果只是要让 Web 控制小车前进、后退、左转、右转和停止，按检查脚本推荐选择 `6000` 或 `6001`。当前 `6000 closed` 但 `6001 open` 时，直接使用 `6001`。
 
 这套方式复用小车自带的控制程序目录：
 
@@ -345,7 +432,7 @@ app  # cd /home/jetson/Rosmaster-App/rosmaster; python3 app_sim_run.py
 robot/rosmaster_tcp_bridge.py
 ```
 
-它会在小车上启动一个 `TCP 6001` 服务，收到 Web 发来的控制帧后，直接调用 `Rosmaster_Lib` 控制底盘。当前已验证成功的手机/Web 遥控主流程使用的是小车原生 `6000` 端口，不需要额外启动这个备用桥接。
+它会在小车上启动一个 `TCP 6001` 服务，收到 Web 发来的控制帧后，直接调用 `Rosmaster_Lib` 控制底盘。如果小车原生 `6000` 没开，但 `6001` 已经 open，就直接让后端连接 `6001`。
 
 ### 12.1 备用：启动车端 Rosmaster 桥接
 
@@ -413,6 +500,77 @@ command from ('192.168.137.1', 端口): forward
 | 后退 | `set_car_run(2, speed)` |
 | 左转 | `set_car_run(6, speed)` |
 | 右转 | `set_car_run(5, speed)` |
-| 停止/急停 | `set_car_run(7, 0)` |
+| 停止/急停 | `set_car_run(0, 0)` |
 
 说明：Docker/ROS2 桥接方式仍然保留，后续做 SLAM 建图和导航时可能还会用到；但 Web 手动遥控优先使用 Rosmaster SSH 桥接。
+
+## 13. 从学长学姐 App 迁移进来的 3 个功能
+
+本次已经把参考 App 中最适合直接迁移的 3 个点接入本项目：
+
+1. 速度控制：Web 遥控页的速度滑块不再只是前端显示。后端会先发送速度帧，再发送前进/后退/转向帧。
+2. 摄像头流：视觉页现在默认使用小车原生 App 直连 `http://小车IP:6500/video_feed`，打开最快；自建 `http://小车IP:8080/?action=stream` 和后端代理 `/api/camera/stream?...` 作为备用。
+3. 外设与模式：遥控页新增灯光、蜂鸣器、循迹按钮，对应原生 App 的 `0x30` 灯光、`0x31` 彩灯效果、`0x13` 蜂鸣器、`0x63/0x64` 循迹协议。
+
+### 13.1 真车使用流程
+
+先检查端口，按脚本推荐使用 `6000` 或 `6001`：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\check_car_connection.ps1 -CarHost "192.168.137.173"
+```
+
+如果脚本推荐 `6001`，就执行：
+
+```powershell
+.\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6001
+```
+
+如果 `6500` 画面不稳定，先启动备用摄像头服务：
+
+```powershell
+.\scripts\start_car_camera_ssh.ps1 -CarHost "192.168.137.173"
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8000/control
+http://127.0.0.1:8000/vision
+```
+
+手机演示时使用启动脚本打印出来的局域网地址，例如：
+
+```text
+http://192.168.137.1:8000/control
+http://192.168.137.1:8000/vision
+```
+
+### 13.2 备用 6001 桥接
+
+如果不用小车原生 `6000`，也可以启动备用桥接：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_car_rosmaster_bridge_ssh.ps1 -CarHost "192.168.137.173"
+.\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6001
+```
+
+备用桥接现在也能识别速度、灯光、蜂鸣器和循迹帧。原生 `6000` 端口优先级更高，灯光使用 `0x30`，蜂鸣器使用 `0x13`，循迹开启/关闭分别使用 `0x63/0x64`。
+
+### 13.3 不连真车的快速测试
+
+只验证代码和接口是否正常时，运行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+python .\scripts\test_migrated_features.py
+```
+
+通过时会看到：
+
+```text
+Migrated feature test passed.
+Checked: camera candidates, speed TCP frames, light, buzzer, follow-line.
+```

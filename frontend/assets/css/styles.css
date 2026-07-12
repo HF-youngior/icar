@@ -48,7 +48,8 @@ body::before {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -209,7 +210,8 @@ h2 {
   gap: 10px;
 }
 
-input {
+input,
+select {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -219,7 +221,8 @@ input {
   outline: none;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: rgba(38, 244, 255, 0.7);
   box-shadow: 0 0 0 3px rgba(38, 244, 255, 0.12);
 }
@@ -505,6 +508,47 @@ input:focus {
   grid-row: 3;
 }
 
+.aux-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aux-button {
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid rgba(120, 240, 255, 0.18);
+  border-radius: 8px;
+  color: var(--text);
+  text-align: left;
+  background: rgba(3, 9, 20, 0.6);
+}
+
+.aux-button:hover,
+.aux-button.active {
+  border-color: rgba(38, 244, 255, 0.68);
+  box-shadow: 0 0 26px rgba(38, 244, 255, 0.16), inset 0 0 22px rgba(38, 244, 255, 0.08);
+}
+
+.aux-button.active {
+  background: linear-gradient(135deg, rgba(38, 244, 255, 0.18), rgba(125, 255, 155, 0.1));
+}
+
+.aux-button strong,
+.aux-button span {
+  display: block;
+}
+
+.aux-button strong {
+  font-size: 18px;
+}
+
+.aux-button span {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 #homeMap {
   width: 100%;
   aspect-ratio: 1.72;
@@ -574,6 +618,13 @@ input:focus {
   object-fit: cover;
 }
 
+.camera-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(4, auto);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -604,12 +655,14 @@ input:focus {
 
   .page-head,
   .connect-strip,
+  .camera-toolbar,
   .hero-grid,
   .two-col,
   .control-layout,
   .vision-layout,
   .nav-layout,
   .sensor-grid,
+  .aux-grid,
   .rail-nav {
     grid-template-columns: 1fr;
   }

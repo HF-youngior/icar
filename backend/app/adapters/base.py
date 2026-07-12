@@ -31,3 +31,5 @@ class CarAdapter(ABC):
     async def send_navigation_goal(self, point: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def auxiliary_control(self, action: str, **values: Any) -> dict[str, Any]:
+        raise NotImplementedError(f"{self.name} does not support auxiliary control: {action}")

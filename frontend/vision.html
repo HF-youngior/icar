@@ -22,7 +22,14 @@
         </header>
         <section class="vision-layout">
           <article class="panel glow-panel">
-            <div class="panel-title"><h2>检测画面</h2><p>当前为模拟图，后续可替换为 Jetson 相机流</p></div>
+            <div class="panel-title"><h2>实时画面</h2><p id="cameraStatus">等待摄像头</p></div>
+            <div class="camera-toolbar">
+              <select id="cameraSelect"></select>
+              <button class="neon-btn primary" id="reconnectCarBtn">重连小车</button>
+              <button class="neon-btn primary" id="cameraAutoBtn">自动连接</button>
+              <button class="neon-btn ghost" id="cameraNextBtn">下一个</button>
+              <button class="neon-btn ghost" id="cameraStopBtn">停止</button>
+            </div>
             <div class="video-frame"><img id="visionImage" alt="视觉检测画面" src="/assets/sample-detection.svg" /></div>
             <button class="neon-btn primary wide" id="detectBtn">检测一次</button>
           </article>
