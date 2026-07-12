@@ -23,6 +23,21 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
+function buildDefaultWsUrl() {
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  const host = window.location.host || "127.0.0.1:8000";
+  return `${scheme}://${host}/ws`;
+}
+
+function initConnectionInput() {
+  const input = $("serverInput");
+  if (!input) return;
+  const current = (input.value || "").trim();
+  if (!current || current === "ws://127.0.0.1:8000/ws") {
+    input.value = buildDefaultWsUrl();
+  }
+}
+
 function connect() {
   const input = $("serverInput");
   if (!input) return;
@@ -371,6 +386,7 @@ function mapPose(pose = {}, width, height) {
 }
 
 function bindEvents() {
+  initConnectionInput();
   $("connectBtn")?.addEventListener("click", connect);
   $("disconnectBtn")?.addEventListener("click", disconnect);
   $("estopBtn")?.addEventListener("click", () => send("emergency_stop", { reason: "web" }));

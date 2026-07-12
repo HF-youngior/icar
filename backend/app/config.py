@@ -23,7 +23,7 @@ class ServerConfig:
 class CarConfig:
     adapter: str = "simulated"
     host: str = "172.20.10.3"
-    port: int = 6000
+    port: int = 6001
     command_timeout_sec: float = 2.0
     cmd_vel_topic: str = "/cmd_vel"
     nav_goal_topic: str = "/goal_pose"
