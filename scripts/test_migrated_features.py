@@ -16,9 +16,10 @@ for key in ("ICAR_DB_HOST", "ICAR_DB_PORT", "ICAR_DB_USER", "ICAR_DB_PASSWORD", 
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend.app.config import CarConfig  # noqa: E402
+from backend.app.config import CarConfig, load_config  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from backend.app.adapters.tcp_car import TcpCarAdapter  # noqa: E402
+from backend.app.slam_runtime import SlamRuntimeManager  # noqa: E402
 
 
 def check_tcp_frames() -> None:
@@ -64,12 +65,33 @@ def check_api() -> None:
         if aux.status_code != 200 or not aux.json().get("ok"):
             raise AssertionError(f"aux failed: {aux.text}")
 
+        slam_status = client.get("/api/slam/status")
+        if slam_status.status_code != 200 or "ports" not in slam_status.json():
+            raise AssertionError(f"slam status failed: {slam_status.text}")
+
+
+def check_slam_helpers() -> None:
+    manager = SlamRuntimeManager(load_config())
+    pose = manager._pose_stamped_message(1.2, -0.4, 1.57)
+    if "/goal_pose" in pose or "frame_id: 'map'" not in pose or "x: 1.2000" not in pose:
+        raise AssertionError(f"unexpected pose message: {pose}")
+
+    initial = manager._initial_pose_message(1.2, -0.4, 1.57)
+    if "covariance" not in initial or "0.25000000" not in initial:
+        raise AssertionError(f"unexpected initial pose message: {initial}")
+
+    tiny_pgm = b"P5\n2 2\n255\n\x00\x7f\xff\x40"
+    png, width, height = manager._pgm_to_png(tiny_pgm)
+    if width != 2 or height != 2 or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise AssertionError("PGM to PNG conversion failed")
+
 
 def main() -> None:
     check_tcp_frames()
+    check_slam_helpers()
     check_api()
     print("Migrated feature test passed.")
-    print("Checked: camera candidates, speed TCP frames, light, buzzer, follow-line.")
+    print("Checked: camera candidates, speed TCP frames, light, buzzer, follow-line, SLAM helpers.")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,25 @@
 const page = document.body.dataset.page || "dashboard";
+
 const state = {
   ws: null,
   connected: false,
-  manualHoldTimer: null,
-  manualStopTimer: null,
-  manualDirection: null,
   manualStopInFlight: false,
   lastManualStopAt: 0,
+  manualStopTimer: null,
+  manualDirection: null,
   camera: {
     candidates: [],
     index: 0,
     attempts: 0,
     active: false,
     currentUrl: "",
+  },
+  slam: {
+    maps: [],
+    selectedMap: "",
+    mapMeta: null,
+    mapImage: null,
+    click: null,
   },
   snapshot: {
     robot: {},
@@ -105,7 +112,7 @@ async function postJson(url, payload = {}) {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    let message = `request failed: ${response.status}`;
+    let message = `请求失败：${response.status}`;
     const text = await response.text().catch(() => "");
     try {
       const data = text ? JSON.parse(text) : {};
@@ -122,6 +129,12 @@ async function postJson(url, payload = {}) {
     throw new Error(message);
   }
   return response.json().catch(() => ({}));
+}
+
+async function getJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`请求失败：${response.status}`);
+  return response.json();
 }
 
 function handleMessage(type, payload) {
@@ -214,9 +227,7 @@ function renderControl() {
 }
 
 function renderNavigation() {
-  renderPoints();
-  renderRoutes();
-  drawMap();
+  drawSlamMap();
 }
 
 function renderVisionPage() {
@@ -288,36 +299,6 @@ function renderSensors() {
   `).join("");
 }
 
-function renderPoints() {
-  const list = $("pointList");
-  if (!list) return;
-  list.innerHTML = (state.snapshot.points || [])
-    .filter((point) => point.enabled !== false)
-    .map((point) => `
-      <button data-point="${point.id}">
-        <strong>${escapeHtml(point.name)}</strong>
-        <span>${escapeHtml(point.description || "")}</span>
-      </button>
-    `).join("");
-  list.querySelectorAll("[data-point]").forEach((btn) => {
-    btn.addEventListener("click", () => send("nav_goal", { point_id: btn.dataset.point }));
-  });
-}
-
-function renderRoutes() {
-  const list = $("routeList");
-  if (!list) return;
-  list.innerHTML = (state.snapshot.routes || []).map((route) => `
-    <button data-route="${route.id}">
-      <strong>${escapeHtml(route.name)}</strong>
-      <span>${escapeHtml(route.description || "")}</span>
-    </button>
-  `).join("");
-  list.querySelectorAll("[data-route]").forEach((btn) => {
-    btn.addEventListener("click", () => send("patrol_start", { route_id: btn.dataset.route }));
-  });
-}
-
 function renderTimelineItem(item) {
   return `
     <div class="timeline-item level-${item.level || "normal"}">
@@ -327,126 +308,9 @@ function renderTimelineItem(item) {
   `;
 }
 
-function drawMap() {
-  const canvas = $("homeMap");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
-  const points = state.snapshot.points || [];
-  const robot = state.snapshot.robot || {};
-  const target = state.snapshot.navigation?.target;
-
-  ctx.clearRect(0, 0, width, height);
-  const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, "#061326");
-  gradient.addColorStop(1, "#090820");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.strokeStyle = "rgba(38,244,255,0.18)";
-  ctx.lineWidth = 1;
-  for (let x = 40; x < width; x += 48) {
-    ctx.beginPath();
-    ctx.moveTo(x, 36);
-    ctx.lineTo(x, height - 36);
-    ctx.stroke();
-  }
-  for (let y = 36; y < height; y += 48) {
-    ctx.beginPath();
-    ctx.moveTo(40, y);
-    ctx.lineTo(width - 40, y);
-    ctx.stroke();
-  }
-
-  ctx.strokeStyle = "rgba(38,244,255,0.5)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(60, 58, width - 120, height - 116);
-  ctx.strokeStyle = "rgba(159,107,255,0.34)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(60, height * 0.48);
-  ctx.lineTo(width - 60, height * 0.48);
-  ctx.moveTo(width * 0.47, 58);
-  ctx.lineTo(width * 0.47, height - 58);
-  ctx.stroke();
-
-  points.forEach((point) => {
-    const p = mapPose(point.pose, width, height);
-    const active = target && target.id === point.id;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, active ? 13 : 9, 0, Math.PI * 2);
-    ctx.fillStyle = active ? "#ff4fd8" : "#26f4ff";
-    ctx.shadowBlur = active ? 28 : 18;
-    ctx.shadowColor = active ? "#ff4fd8" : "#26f4ff";
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#e9f7ff";
-    ctx.font = "16px Microsoft YaHei, Arial";
-    ctx.fillText(point.name, p.x + 16, p.y + 6);
-  });
-
-  const r = mapPose(robot.pose || {}, width, height);
-  ctx.beginPath();
-  ctx.arc(r.x, r.y, 15, 0, Math.PI * 2);
-  ctx.fillStyle = "#7dff9b";
-  ctx.shadowBlur = 30;
-  ctx.shadowColor = "#7dff9b";
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "#061326";
-  ctx.font = "bold 12px Arial";
-  ctx.fillText("BOT", r.x - 11, r.y + 4);
-}
-
-function mapPose(pose = {}, width, height) {
-  const x = Number(pose.x || 0);
-  const y = Number(pose.y || 0);
-  return {
-    x: 80 + x * ((width - 160) / 5.2),
-    y: height - 80 - y * ((height - 160) / 4.4),
-  };
-}
-
-function bindEvents() {
-  initConnectionInput();
-  $("connectBtn")?.addEventListener("click", connect);
-  $("disconnectBtn")?.addEventListener("click", disconnect);
-  $("estopBtn")?.addEventListener("click", emergencyStop);
-  $("reconnectCarBtn")?.addEventListener("click", reconnectCar);
-  $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
-  $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
-  $("lightToggleBtn")?.addEventListener("click", toggleLight);
-  $("buzzerBtn")?.addEventListener("click", () => sendAuxControl("buzzer", { duration_ms: 300 }));
-  $("followLineBtn")?.addEventListener("click", toggleFollowLine);
-  $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
-  $("cameraNextBtn")?.addEventListener("click", () => {
-    state.camera.attempts = 0;
-    startCameraNext();
-  });
-  $("cameraStopBtn")?.addEventListener("click", stopCamera);
-  $("cameraSelect")?.addEventListener("change", () => {
-    state.camera.attempts = 0;
-    startCameraAt(Number($("cameraSelect").value || 0));
-  });
-  $("speedRange")?.addEventListener("input", updateSpeedDisplay);
-  updateSpeedDisplay();
-  document.querySelectorAll(".neon-dpad button").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      sendManualPulse(button.dataset.dir);
-    });
-  });
-  window.addEventListener("blur", () => sendStopNow());
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) sendStopNow();
-  });
-}
-
 async function loadSnapshot() {
   try {
-    const response = await fetch("/api/snapshot");
-    state.snapshot = await response.json();
+    state.snapshot = await getJson("/api/snapshot");
     render();
   } catch (error) {
     console.warn("snapshot failed", error);
@@ -528,9 +392,7 @@ async function toggleLight() {
 async function toggleFollowLine() {
   const button = $("followLineBtn");
   const enabled = button?.dataset.enabled !== "true";
-  if (enabled) {
-    sendStopNow();
-  }
+  if (enabled) await sendStopNow();
   const ok = await sendAuxControl("follow_line", { enabled });
   if (ok && button) {
     button.dataset.enabled = String(enabled);
@@ -542,8 +404,7 @@ async function loadCameraCandidates() {
   const select = $("cameraSelect");
   if (!select) return;
   try {
-    const response = await fetch("/api/camera/candidates");
-    const data = await response.json();
+    const data = await getJson("/api/camera/candidates");
     state.camera.candidates = data.urls || [];
     select.innerHTML = state.camera.candidates.map((candidate, index) => (
       `<option value="${index}">${escapeHtml(candidate.label)}</option>`
@@ -630,9 +491,7 @@ function stopCamera() {
 async function sendManualHttp(direction) {
   const speed = currentSpeed();
   const payload = { direction, speed };
-  if (direction !== "stop") {
-    payload.duration_ms = 260;
-  }
+  if (direction !== "stop") payload.duration_ms = 260;
   try {
     await postJson("/api/control/manual", payload);
   } catch (error) {
@@ -641,22 +500,9 @@ async function sendManualHttp(direction) {
 }
 
 function clearManualHold() {
-  if (state.manualHoldTimer) {
-    clearInterval(state.manualHoldTimer);
-    state.manualHoldTimer = null;
-  }
   if (state.manualStopTimer) {
     clearTimeout(state.manualStopTimer);
     state.manualStopTimer = null;
-  }
-}
-
-function endManualHold(sendStop = true) {
-  const activeDirection = state.manualDirection;
-  clearManualHold();
-  state.manualDirection = null;
-  if (sendStop && activeDirection && activeDirection !== "stop") {
-    sendManualHttp("stop");
   }
 }
 
@@ -709,12 +555,294 @@ function sendManualPulse(direction) {
   }, 260);
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;");
+async function loadSlamMaps() {
+  const select = $("slamMapSelect");
+  if (!select) return;
+  setText("slamMapHint", "正在读取小车地图列表...");
+  try {
+    const data = await getJson("/api/slam/maps");
+    state.slam.maps = data.maps || [];
+    select.innerHTML = state.slam.maps.length
+      ? state.slam.maps.map((map) => `<option value="${escapeHtml(map.name)}">${escapeHtml(map.name)}</option>`).join("")
+      : `<option value="">未找到地图</option>`;
+    if (!state.slam.selectedMap && state.slam.maps.length) {
+      state.slam.selectedMap = state.slam.maps[0].name;
+      select.value = state.slam.selectedMap;
+    }
+    setText("slamMapHint", state.slam.maps.length ? "地图列表已加载" : "小车 maps 目录没有 YAML 地图");
+    if (state.slam.selectedMap) await loadSelectedSlamMap();
+  } catch (error) {
+    console.warn("slam maps failed", error);
+    setText("slamMapHint", `地图读取失败：${error.message || error}`);
+  }
+}
+
+async function loadSelectedSlamMap() {
+  const select = $("slamMapSelect");
+  const name = select?.value || state.slam.selectedMap;
+  if (!name) return;
+  state.slam.selectedMap = name;
+  setText("slamMapHint", `正在加载地图 ${name}...`);
+  try {
+    const mapInfo = state.slam.maps.find((item) => item.name === name) || {};
+    const data = mapInfo.meta ? mapInfo : (await getJson(`/api/slam/maps`)).maps.find((item) => item.name === name);
+    const image = new Image();
+    image.onload = () => {
+      state.slam.mapImage = image;
+      state.slam.mapMeta = data?.meta || {
+        resolution: 0.05,
+        origin: [-10, -10, 0],
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      };
+      drawSlamMap();
+      renderSlamMapMeta();
+      setText("slamMapHint", "地图已加载，点击地图可取点。");
+    };
+    image.onerror = () => setText("slamMapHint", "地图图片加载失败");
+    image.src = withCacheBust(`/api/slam/maps/${encodeURIComponent(name)}/image`);
+  } catch (error) {
+    console.warn("slam map load failed", error);
+    setText("slamMapHint", `地图加载失败：${error.message || error}`);
+  }
+}
+
+function drawSlamMap() {
+  const canvas = $("slamMapCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#06101f";
+  ctx.fillRect(0, 0, width, height);
+
+  const image = state.slam.mapImage;
+  if (!image) {
+    ctx.fillStyle = "#8ea4b8";
+    ctx.font = "18px Microsoft YaHei, Arial";
+    ctx.fillText("加载小车地图后会显示真实 SLAM 栅格图", 28, 48);
+    return;
+  }
+
+  const frame = slamMapFrame();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, frame.x, frame.y, frame.w, frame.h);
+  ctx.strokeStyle = "rgba(38,244,255,0.5)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(frame.x, frame.y, frame.w, frame.h);
+
+  if (state.slam.click) {
+    const p = worldToCanvas(state.slam.click.x, state.slam.click.y);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = "#ff4fd8";
+    ctx.shadowBlur = 18;
+    ctx.shadowColor = "#ff4fd8";
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#e9f7ff";
+    ctx.font = "14px Microsoft YaHei, Arial";
+    ctx.fillText(`(${state.slam.click.x.toFixed(2)}, ${state.slam.click.y.toFixed(2)})`, p.x + 12, p.y - 10);
+  }
+}
+
+function slamMapFrame() {
+  const canvas = $("slamMapCanvas");
+  const image = state.slam.mapImage;
+  const cw = canvas?.width || 900;
+  const ch = canvas?.height || 620;
+  if (!image) return { x: 20, y: 20, w: cw - 40, h: ch - 40, scale: 1 };
+  const scale = Math.min((cw - 40) / image.naturalWidth, (ch - 40) / image.naturalHeight);
+  const w = image.naturalWidth * scale;
+  const h = image.naturalHeight * scale;
+  return { x: (cw - w) / 2, y: (ch - h) / 2, w, h, scale };
+}
+
+function canvasToWorld(clientX, clientY) {
+  const canvas = $("slamMapCanvas");
+  const image = state.slam.mapImage;
+  const meta = state.slam.mapMeta;
+  if (!canvas || !image || !meta) return null;
+  const rect = canvas.getBoundingClientRect();
+  const frame = slamMapFrame();
+  const cx = ((clientX - rect.left) / rect.width) * canvas.width;
+  const cy = ((clientY - rect.top) / rect.height) * canvas.height;
+  if (cx < frame.x || cx > frame.x + frame.w || cy < frame.y || cy > frame.y + frame.h) return null;
+  const px = (cx - frame.x) / frame.scale;
+  const py = image.naturalHeight - ((cy - frame.y) / frame.scale);
+  const origin = meta.origin || [-10, -10, 0];
+  const resolution = Number(meta.resolution || 0.05);
+  return {
+    x: origin[0] + px * resolution,
+    y: origin[1] + py * resolution,
+  };
+}
+
+function worldToCanvas(x, y) {
+  const image = state.slam.mapImage;
+  const meta = state.slam.mapMeta;
+  const frame = slamMapFrame();
+  const origin = meta?.origin || [-10, -10, 0];
+  const resolution = Number(meta?.resolution || 0.05);
+  const px = (x - origin[0]) / resolution;
+  const py = image.naturalHeight - ((y - origin[1]) / resolution);
+  return {
+    x: frame.x + px * frame.scale,
+    y: frame.y + py * frame.scale,
+  };
+}
+
+function handleSlamMapClick(event) {
+  const world = canvasToWorld(event.clientX, event.clientY);
+  if (!world) return;
+  state.slam.click = world;
+  const xInput = $("slamPoseX");
+  const yInput = $("slamPoseY");
+  if (xInput) xInput.value = world.x.toFixed(2);
+  if (yInput) yInput.value = world.y.toFixed(2);
+  setText("slamClickCoord", `${world.x.toFixed(2)}, ${world.y.toFixed(2)}`);
+  drawSlamMap();
+}
+
+function renderSlamMapMeta() {
+  const meta = state.slam.mapMeta;
+  if (!meta) {
+    setText("slamMapMeta", "--");
+    return;
+  }
+  const origin = meta.origin || [];
+  setText("slamMapMeta", `${meta.width || "--"}×${meta.height || "--"} · ${meta.resolution || "--"}m · origin [${origin.join(", ")}]`);
+}
+
+async function refreshSlamStatus() {
+  const list = $("slamStatusList");
+  if (!list) return;
+  list.innerHTML = `<div><span>状态</span><strong>读取中...</strong></div>`;
+  try {
+    const data = await getJson("/api/slam/status");
+    const ports = data.ports || {};
+    const topics = data.topics || [];
+    list.innerHTML = [
+      statusRow("小车", `${data.host || "--"} · SSH ${ports.ssh_22 ? "open" : "closed"}`),
+      statusRow("ROS 容器", data.container?.running ? "icar_web_nav running" : "未运行"),
+      statusRow("模式", data.mode || "idle"),
+      statusRow("端口", `6000 ${ports.control_6000 ? "open" : "--"} · 6500 ${ports.camera_6500 ? "open" : "--"}`),
+      statusRow("ROS topics", topics.slice(0, 8).join(", ") || "暂无"),
+    ].join("");
+  } catch (error) {
+    list.innerHTML = statusRow("读取失败", error.message || String(error));
+  }
+}
+
+function statusRow(label, value) {
+  return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+async function refreshSlamLogs() {
+  const log = $("slamLogs");
+  if (!log) return;
+  try {
+    const data = await getJson("/api/slam/logs");
+    log.textContent = data.logs || "暂无日志";
+  } catch (error) {
+    log.textContent = `日志读取失败：${error.message || error}`;
+  }
+}
+
+async function runSlamAction(label, action) {
+  setText("navMessage", `${label}...`);
+  try {
+    const result = await action();
+    setText("navMessage", `${label}完成`);
+    await refreshSlamStatus();
+    await refreshSlamLogs();
+    await loadSnapshot();
+    return result;
+  } catch (error) {
+    console.warn(`${label} failed`, error);
+    setText("navMessage", `${label}失败：${error.message || error}`);
+    throw error;
+  }
+}
+
+function bindSlamEvents() {
+  $("slamMapCanvas")?.addEventListener("click", handleSlamMapClick);
+  $("slamMapSelect")?.addEventListener("change", loadSelectedSlamMap);
+  $("slamRefreshMapsBtn")?.addEventListener("click", loadSlamMaps);
+  $("slamReloadMapBtn")?.addEventListener("click", loadSelectedSlamMap);
+  $("slamRefreshStatusBtn")?.addEventListener("click", () => {
+    refreshSlamStatus();
+    refreshSlamLogs();
+  });
+  $("slamStartMappingBtn")?.addEventListener("click", () => runSlamAction("启动 SLAM 建图", () => (
+    postJson("/api/slam/mapping/start", { algorithm: "gmapping" })
+  )));
+  $("slamSaveMapBtn")?.addEventListener("click", () => runSlamAction("保存地图", async () => {
+    const name = $("slamMapNameInput")?.value || "yahboomcar_web";
+    const result = await postJson("/api/slam/map/save", { map_name: name });
+    await loadSlamMaps();
+    return result;
+  }));
+  $("slamStartNavBtn")?.addEventListener("click", () => runSlamAction("启动导航系统", () => (
+    postJson("/api/slam/navigation/start", {
+      algorithm: $("slamNavAlgorithm")?.value || "dwa",
+      map: $("slamMapSelect")?.value || "yahboomcar.yaml",
+    })
+  )));
+  $("slamSetInitialBtn")?.addEventListener("click", () => runSlamAction("设置初始位姿", () => (
+    postJson("/api/slam/pose/initial", currentSlamPose())
+  )));
+  $("slamSendGoalBtn")?.addEventListener("click", () => runSlamAction("发送导航目标", () => (
+    postJson("/api/slam/goal", currentSlamPose())
+  )));
+  $("slamStopBtn")?.addEventListener("click", () => runSlamAction("停止 SLAM/导航", () => (
+    postJson("/api/slam/stop", {})
+  )));
+}
+
+function currentSlamPose() {
+  return {
+    x: Number($("slamPoseX")?.value || 0),
+    y: Number($("slamPoseY")?.value || 0),
+    theta: Number($("slamPoseTheta")?.value || 0),
+  };
+}
+
+function bindEvents() {
+  initConnectionInput();
+  $("connectBtn")?.addEventListener("click", connect);
+  $("disconnectBtn")?.addEventListener("click", disconnect);
+  $("estopBtn")?.addEventListener("click", emergencyStop);
+  $("reconnectCarBtn")?.addEventListener("click", reconnectCar);
+  $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
+  $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
+  $("lightToggleBtn")?.addEventListener("click", toggleLight);
+  $("buzzerBtn")?.addEventListener("click", () => sendAuxControl("buzzer", { duration_ms: 300 }));
+  $("followLineBtn")?.addEventListener("click", toggleFollowLine);
+  $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
+  $("cameraNextBtn")?.addEventListener("click", () => {
+    state.camera.attempts = 0;
+    startCameraNext();
+  });
+  $("cameraStopBtn")?.addEventListener("click", stopCamera);
+  $("cameraSelect")?.addEventListener("change", () => {
+    state.camera.attempts = 0;
+    startCameraAt(Number($("cameraSelect").value || 0));
+  });
+  $("speedRange")?.addEventListener("input", updateSpeedDisplay);
+  updateSpeedDisplay();
+  document.querySelectorAll(".neon-dpad button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      sendManualPulse(button.dataset.dir);
+    });
+  });
+  if (page === "navigation") bindSlamEvents();
+  window.addEventListener("blur", () => sendStopNow());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) sendStopNow();
+  });
 }
 
 async function initPage() {
@@ -723,7 +851,20 @@ async function initPage() {
     await loadCameraCandidates();
     startCameraAuto();
   }
+  if (page === "navigation") {
+    await loadSlamMaps();
+    await refreshSlamStatus();
+    await refreshSlamLogs();
+  }
   connect();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
 }
 
 bindEvents();

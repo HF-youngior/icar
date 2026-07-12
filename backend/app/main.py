@@ -19,6 +19,7 @@ from .config import PROJECT_ROOT, load_config, resolve_project_path
 from .database import DatabaseStore
 from .navigation import NavigationService
 from .sensors import SensorService
+from .slam_runtime import SlamRuntimeManager
 from .state import StateHub
 from .vision import VisionService
 
@@ -32,6 +33,7 @@ runtime = CarRuntimeRecovery(config)
 navigation = NavigationService(config, state, adapter)
 sensors = SensorService(config, state)
 vision = VisionService(config, state)
+slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
 
 app = FastAPI(title="智能家居管家机器人平台", version="0.1.0")
@@ -334,6 +336,136 @@ async def navigation_patrol(payload: dict[str, Any]) -> dict[str, Any]:
 async def navigation_stop() -> dict[str, Any]:
     await navigation.stop()
     return {"ok": True}
+
+
+@app.get("/api/slam/status")
+async def slam_status() -> dict[str, Any]:
+    return await asyncio.to_thread(slam_runtime.status)
+
+
+@app.get("/api/slam/maps")
+async def slam_maps() -> dict[str, Any]:
+    return {"ok": True, "maps": await asyncio.to_thread(slam_runtime.list_maps)}
+
+
+@app.get("/api/slam/maps/{map_name}/image")
+async def slam_map_image(map_name: str) -> FileResponse:
+    try:
+        path = await asyncio.to_thread(slam_runtime.map_image_path, map_name)
+        return FileResponse(path, media_type="image/png")
+    except Exception as exc:
+        logger.exception("slam map image failed: %s", map_name)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/slam/logs")
+async def slam_logs() -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(slam_runtime.logs)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/mapping/start")
+async def slam_start_mapping(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    algorithm = str((payload or {}).get("algorithm", "gmapping")).lower()
+    try:
+        result = await asyncio.to_thread(slam_runtime.start_mapping, algorithm)
+        await state.update_navigation(
+            state="mapping",
+            progress=0,
+            message=f"SLAM 建图已启动：{algorithm}",
+            target=None,
+            route=[],
+        )
+        await state.update_robot(mode="mapping", last_command=f"slam_mapping:{algorithm}", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("slam mapping start failed")
+        await state.add_alarm("slam", "warning", f"SLAM 建图启动失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/map/save")
+async def slam_save_map(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    map_name = str((payload or {}).get("map_name", "yahboomcar_web"))
+    try:
+        result = await asyncio.to_thread(slam_runtime.save_map, map_name)
+        await state.update_navigation(message=f"地图保存完成：{result.get('map')}", progress=1)
+        return result
+    except Exception as exc:
+        logger.exception("slam map save failed")
+        await state.add_alarm("slam", "warning", f"SLAM 地图保存失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/navigation/start")
+async def slam_start_navigation(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload or {}
+    algorithm = str(body.get("algorithm", "dwa")).lower()
+    map_name = str(body.get("map", "yahboomcar.yaml"))
+    try:
+        result = await asyncio.to_thread(slam_runtime.start_navigation, algorithm, map_name)
+        await state.update_navigation(
+            state="nav_ready",
+            progress=0,
+            message=f"导航系统已启动：{algorithm.upper()} / {map_name}",
+            target=None,
+            route=[],
+        )
+        await state.update_robot(mode="navigation_ready", last_command=f"slam_nav:{algorithm}", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("slam navigation start failed")
+        await state.add_alarm("slam", "warning", f"导航系统启动失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/pose/initial")
+async def slam_initial_pose(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        x = float(payload.get("x", 0))
+        y = float(payload.get("y", 0))
+        theta = float(payload.get("theta", 0))
+        result = await asyncio.to_thread(slam_runtime.send_initial_pose, x, y, theta)
+        await state.update_robot(pose={"x": x, "y": y, "theta": theta}, last_command="slam_initial_pose", last_error=None)
+        await state.update_navigation(message=f"初始位姿已设置：({x:.2f}, {y:.2f})")
+        return result
+    except Exception as exc:
+        logger.exception("slam initial pose failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/goal")
+async def slam_goal(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        x = float(payload.get("x", 0))
+        y = float(payload.get("y", 0))
+        theta = float(payload.get("theta", 0))
+        result = await asyncio.to_thread(slam_runtime.send_goal_pose, x, y, theta)
+        await state.update_navigation(
+            state="running",
+            target={"id": "slam_goal", "name": "Web 目标点", "pose": {"x": x, "y": y, "theta": theta}},
+            progress=0,
+            message=f"已发送导航目标：({x:.2f}, {y:.2f})",
+        )
+        await state.update_robot(mode="navigation", target="Web 目标点", last_command="slam_goal", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("slam goal failed")
+        await state.add_alarm("slam", "warning", f"导航目标发送失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/slam/stop")
+async def slam_stop() -> dict[str, Any]:
+    try:
+        result = await asyncio.to_thread(slam_runtime.stop)
+        await navigation.stop(state="stopped", message="SLAM/导航进程已停止")
+        return result
+    except Exception as exc:
+        logger.exception("slam stop failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/vision/detect")

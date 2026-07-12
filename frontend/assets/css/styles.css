@@ -343,8 +343,18 @@ select:focus {
   gap: 14px;
 }
 
+.slam-layout {
+  display: grid;
+  grid-template-columns: minmax(520px, 1.35fr) minmax(320px, 0.65fr);
+  gap: 14px;
+}
+
 .map-panel {
   grid-row: span 2;
+}
+
+.slam-map-panel {
+  grid-row: span 3;
 }
 
 .sensor-grid {
@@ -444,6 +454,7 @@ select:focus {
   display: block;
   margin-top: 6px;
   font-size: 22px;
+  word-break: break-word;
 }
 
 .speed-row {
@@ -558,6 +569,81 @@ select:focus {
   background: #06101f;
 }
 
+.map-toolbar,
+.inline-form,
+.two-buttons {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.stacked-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.pose-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pose-grid label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pose-grid input {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.form-note,
+.coordinate-strip {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.coordinate-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.slam-map-frame {
+  border: 1px solid rgba(120, 240, 255, 0.22);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #06101f;
+}
+
+#slamMapCanvas {
+  width: 100%;
+  aspect-ratio: 1.45;
+  display: block;
+}
+
+.slam-log-panel {
+  grid-column: 1 / -1;
+}
+
+.slam-log-panel pre {
+  min-height: 220px;
+  max-height: 380px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid rgba(120, 240, 255, 0.14);
+  border-radius: 8px;
+  color: #d7ecff;
+  background: rgba(3, 9, 20, 0.72);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .progress-wrap {
   display: grid;
   grid-template-columns: 1fr 56px;
@@ -643,7 +729,8 @@ select:focus {
   .two-col,
   .control-layout,
   .vision-layout,
-  .nav-layout {
+  .nav-layout,
+  .slam-layout {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -661,9 +748,14 @@ select:focus {
   .control-layout,
   .vision-layout,
   .nav-layout,
+  .slam-layout,
   .sensor-grid,
   .aux-grid,
-  .rail-nav {
+  .rail-nav,
+  .map-toolbar,
+  .inline-form,
+  .two-buttons,
+  .pose-grid {
     grid-template-columns: 1fr;
   }
 

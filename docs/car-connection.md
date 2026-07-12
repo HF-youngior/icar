@@ -574,3 +574,153 @@ python .\scripts\test_migrated_features.py
 Migrated feature test passed.
 Checked: camera candidates, speed TCP frames, light, buzzer, follow-line.
 ```
+
+## 14. 实车 SLAM 建图与自动导航（yyh 分支）
+
+当前 `yyh` 分支已经把课程 6.1/6.2 的实车 SLAM/Navigation2 流程接入 Web。这个功能不是原来导航页里的模拟家庭地图，而是通过 SSH 到小车，在小车 Docker 里的 ROS2 Foxy 环境启动真实建图和导航节点。
+
+### 14.1 端口约定
+
+| 端口 | 用途 | 说明 |
+| --- | --- | --- |
+| `22` | SSH | Web 后端通过 SSH 启动小车 ROS2/Docker 任务 |
+| `6000` | 小车原生 Rosmaster 控制 | Web 遥控默认使用这个端口 |
+| `6500` | 小车原生 App 摄像头 | 视觉页面默认直连 `http://小车IP:6500/video_feed` |
+| `6001` | 自建 Rosmaster 备用桥 | 只在 `6000` 不可用时作为备选 |
+| `8000` | 本地 Web 后端 | 手机访问 `http://电脑IP:8000/control` 或 `/navigation` |
+
+### 14.2 启动 Web 后端
+
+小车当前 IP 例如 `192.168.137.173` 时，在 Windows PowerShell 执行：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\check_car_connection.ps1 -CarHost "192.168.137.173"
+.\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6000
+```
+
+电脑浏览器打开：
+
+```text
+http://127.0.0.1:8000/navigation
+```
+
+手机同热点访问时，用启动脚本打印出的电脑热点地址，例如：
+
+```text
+http://192.168.137.1:8000/navigation
+```
+
+### 14.3 Web 页面里的操作顺序
+
+建图流程：
+
+1. 打开 `/navigation`。
+2. 点击“开始 SLAM 建图”。
+3. 用遥控页或小车已有方式轻微移动小车，让激光雷达扫描环境。
+4. 回到导航页，输入地图名，例如 `yahboomcar_web`。
+5. 点击“保存地图”。
+
+导航流程：
+
+1. 在地图下拉框里选择 `yahboomcar.yaml`、`yahboomcar2.yaml` 或刚保存的地图。
+2. 点击“启动导航”，默认使用 `DWA` 算法，也可以切换到 `TEB`。
+3. 在真实地图上点击小车当前位置，填入 `X/Y`。
+4. 根据小车朝向填入 `θ`，点击“设为初始位姿”。
+5. 在地图上点击目标点，必要时调整 `θ`。
+6. 点击“发送导航目标”。
+7. 需要停止时点击“停止 SLAM/导航”，必要时再去遥控页点急停。
+
+### 14.4 后台实际执行的 ROS2 命令
+
+Web 后端会通过 SSH 创建或复用一个常驻 Docker 容器：
+
+```text
+icar_web_nav
+```
+
+容器镜像：
+
+```text
+yahboomtechnology/ros-foxy:5.0.1
+```
+
+建图对应课程 6.1：
+
+```bash
+ros2 launch yahboomcar_nav map_gmapping_launch.py
+ros2 launch yahboomcar_nav save_map_launch.py map_path:=/root/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps/<地图名>
+```
+
+导航对应课程 6.2：
+
+```bash
+ros2 launch yahboomcar_nav laser_bringup_launch.py
+ros2 launch yahboomcar_nav navigation_dwa_launch.py map:=/root/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps/<地图名>.yaml
+```
+
+也支持：
+
+```bash
+ros2 launch yahboomcar_nav navigation_teb_launch.py map:=...
+```
+
+Web 设置初始位姿会发布：
+
+```text
+/initialpose  geometry_msgs/msg/PoseWithCovarianceStamped
+```
+
+Web 发送目标点会发布：
+
+```text
+/goal_pose  geometry_msgs/msg/PoseStamped
+```
+
+### 14.5 地图文件位置
+
+小车地图目录：
+
+```text
+/home/jetson/code/yahboomcar_ws/src/yahboomcar_nav/maps
+```
+
+当前常见地图：
+
+```text
+yahboomcar.yaml
+yahboomcar2.yaml
+```
+
+Web 后端会把 `.pgm/.yaml` 读取回来，转换成浏览器可显示的 PNG，缓存到：
+
+```text
+data/slam_maps/
+```
+
+### 14.6 调试命令
+
+查看 Web 端认为的 SLAM 状态：
+
+```powershell
+curl http://127.0.0.1:8000/api/slam/status
+```
+
+查看车端日志：
+
+```powershell
+curl http://127.0.0.1:8000/api/slam/logs
+```
+
+手动查看 Docker 容器：
+
+```powershell
+ssh jetson@192.168.137.173 "docker ps -a --filter name=icar_web_nav"
+```
+
+如果导航页报错，优先检查：
+
+1. `22` 是否 open。
+2. 小车是否连接了雷达和底盘线。
+3. `icar_web_nav` 是否 running。
+4. `/api/slam/logs` 里是否有 `yahboomcar_nav`、`rplidar`、`map_server`、`nav2` 相关错误。

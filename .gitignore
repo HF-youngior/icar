@@ -12,6 +12,8 @@ data/*.log
 data/logs/*.log
 data/captures/*
 !data/captures/.gitkeep
+data/slam_maps/*
+!data/slam_maps/.gitkeep
 vision/weights/
 vision/datasets/
 vision/runs/
