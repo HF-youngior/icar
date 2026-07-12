@@ -97,12 +97,14 @@ if ($HostValue -eq "0.0.0.0") {
     Write-Host "Local access:" -ForegroundColor Green
     Write-Host "  Dashboard: http://127.0.0.1:${PortValue}/dashboard"
     Write-Host "  Control:   http://127.0.0.1:${PortValue}/control"
+    Write-Host "  SLAM Nav:  http://127.0.0.1:${PortValue}/navigation"
     Write-Host ""
     Write-Host "Shareable LAN URLs (phone and car should be on the same hotspot):" -ForegroundColor Green
     $Candidates = @(Get-LocalIpv4Candidates)
     if ($Candidates) {
         foreach ($Candidate in $Candidates) {
             Write-Host "  [$($Candidate.InterfaceAlias)] http://$($Candidate.IPAddress):${PortValue}/control"
+            Write-Host "  [$($Candidate.InterfaceAlias)] http://$($Candidate.IPAddress):${PortValue}/navigation"
         }
         Write-Host ""
         Write-Host "Usually the Windows hotspot address is something like 192.168.137.1." -ForegroundColor Yellow
@@ -116,6 +118,7 @@ elseif ($HostValue -eq "127.0.0.1" -or $HostValue -eq "localhost") {
     Write-Host "Local access only:" -ForegroundColor Yellow
     Write-Host "  Dashboard: http://127.0.0.1:${PortValue}/dashboard"
     Write-Host "  Control:   http://127.0.0.1:${PortValue}/control"
+    Write-Host "  SLAM Nav:  http://127.0.0.1:${PortValue}/navigation"
     Write-Host ""
     Write-Host "To allow phone access on the same hotspot, run:" -ForegroundColor Yellow
     Write-Host '  $env:ICAR_HOST="0.0.0.0"'
@@ -124,9 +127,12 @@ else {
     Write-Host "Access URLs:" -ForegroundColor Green
     Write-Host "  Dashboard: http://${HostValue}:${PortValue}/dashboard"
     Write-Host "  Control:   http://${HostValue}:${PortValue}/control"
+    Write-Host "  SLAM Nav:  http://${HostValue}:${PortValue}/navigation"
 }
 
 Write-Host ""
+Write-Host "Navigation page should show: SLAM Navigation v2 / 激光 SLAM 建图与自动导航." -ForegroundColor Cyan
+Write-Host "If you still see '房间导航与巡逻', stop the old backend process and hard-refresh the browser." -ForegroundColor Yellow
 Write-Host "If Windows Firewall asks, allow access on Private networks." -ForegroundColor Yellow
 Write-Host ""
 

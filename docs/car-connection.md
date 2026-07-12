@@ -605,6 +605,28 @@ cd F:\北交大2周项目\icar-smart-home
 http://127.0.0.1:8000/navigation
 ```
 
+正常页面顶部应该显示：
+
+```text
+SLAM Navigation v2
+激光 SLAM 建图与自动导航
+```
+
+如果你看到的是“房间导航与巡逻”“家庭地图”“房间点位”，说明浏览器或 `8000` 后端还在使用旧页面。先在启动后端的 PowerShell 窗口按 `Ctrl+C`，如果端口仍被占用，就按脚本提示执行：
+
+```powershell
+Stop-Process -Id <脚本提示的PID>
+```
+
+然后重新启动：
+
+```powershell
+cd F:\北交大2周项目\icar-smart-home
+.\scripts\start_backend_car_ssh.ps1 -CarHost "192.168.137.173" -CarPort 6000
+```
+
+最后在浏览器按 `Ctrl+F5` 强制刷新 `/navigation`。
+
 手机同热点访问时，用启动脚本打印出的电脑热点地址，例如：
 
 ```text

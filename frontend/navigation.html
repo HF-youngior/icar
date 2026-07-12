@@ -3,8 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>导航 | 智能家居管家机器人</title>
-    <link rel="stylesheet" href="/assets/css/styles.css" />
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <title>SLAM 导航 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css?v=slam-navigation-v2" />
   </head>
   <body data-page="navigation">
     <div class="app-shell">
@@ -15,12 +16,13 @@
         </nav>
         <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
       </aside>
+
       <main class="page">
         <header class="page-head">
           <div>
-            <p class="eyebrow">SLAM & Navigation2</p>
-            <h1>实车建图与自动导航</h1>
-            <p class="subhead" id="navMessage">等待任务</p>
+            <p class="eyebrow">SLAM Navigation v2</p>
+            <h1>激光 SLAM 建图与自动导航</h1>
+            <p class="subhead" id="navMessage">按右侧步骤启动实车建图或导航</p>
           </div>
           <div class="connect-strip">
             <input id="serverInput" value="" placeholder="ws://当前页面主机/ws" />
@@ -29,85 +31,75 @@
           </div>
         </header>
 
+        <section class="slam-flow">
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>操作顺序</h2>
+              <p>先检查连接，再建图保存，最后启动导航和发送目标点。</p>
+            </div>
+            <div class="step-grid">
+              <button class="step-card" id="slamRefreshStatusBtn"><span>1</span><strong>检查小车连接</strong><small>确认 SSH、6000、6500 和 ROS 容器状态</small></button>
+              <button class="step-card" id="slamStartMappingBtn"><span>2</span><strong>开始 SLAM 建图</strong><small>启动 yahboomcar_nav 的 gmapping 建图链路</small></button>
+              <button class="step-card" id="slamSaveMapBtn"><span>3</span><strong>保存地图模型</strong><small>保存 .yaml/.pgm 到小车 maps 目录</small></button>
+              <button class="step-card" id="slamStartNavBtn"><span>4</span><strong>启动自动导航</strong><small>加载地图并启动 DWA/TEB Navigation2</small></button>
+              <button class="step-card" id="slamSetInitialBtn"><span>5</span><strong>设置初始位姿</strong><small>点击地图取小车当前位置后发布 /initialpose</small></button>
+              <button class="step-card" id="slamSendGoalBtn"><span>6</span><strong>发送导航目标</strong><small>点击地图取终点后发布 /goal_pose</small></button>
+            </div>
+          </article>
+
+          <article class="panel glow-panel slam-params-panel">
+            <div class="panel-title">
+              <h2>参数</h2>
+              <p>建图保存和导航启动都会使用这些值。</p>
+            </div>
+            <div class="slam-param-grid">
+              <label>地图文件<select id="slamMapSelect"></select></label>
+              <label>新地图名<input id="slamMapNameInput" value="yahboomcar_web" /></label>
+              <label>导航算法<select id="slamNavAlgorithm"><option value="dwa">DWA</option><option value="teb">TEB</option><option value="rtabmap">RTABMap</option></select></label>
+              <label>X<input id="slamPoseX" type="number" step="0.05" value="0" /></label>
+              <label>Y<input id="slamPoseY" type="number" step="0.05" value="0" /></label>
+              <label>θ<input id="slamPoseTheta" type="number" step="0.05" value="0" /></label>
+            </div>
+            <div class="two-buttons">
+              <button class="neon-btn ghost" id="slamRefreshMapsBtn">刷新地图列表</button>
+              <button class="neon-btn danger" id="slamStopBtn">停止 SLAM/导航</button>
+            </div>
+          </article>
+        </section>
+
         <section class="slam-layout">
           <article class="panel glow-panel slam-map-panel">
             <div class="panel-title">
-              <h2>真实地图</h2>
-              <p id="slamMapHint">选择小车上的 YAML 地图后，点击地图可填入真实 map 坐标。</p>
-            </div>
-            <div class="map-toolbar">
-              <select id="slamMapSelect"></select>
-              <button class="neon-btn ghost" id="slamRefreshMapsBtn">刷新地图</button>
-              <button class="neon-btn ghost" id="slamReloadMapBtn">加载地图</button>
+              <h2>真实 SLAM 地图</h2>
+              <p id="slamMapHint">地图会从小车 maps 目录读取。点击地图可以把真实 map 坐标填入 X/Y。</p>
             </div>
             <div class="slam-map-frame">
               <canvas id="slamMapCanvas" width="900" height="620"></canvas>
             </div>
             <div class="coordinate-strip">
               <span>点击坐标：<strong id="slamClickCoord">--</strong></span>
-              <span>地图：<strong id="slamMapMeta">--</strong></span>
+              <span>地图参数：<strong id="slamMapMeta">--</strong></span>
             </div>
-          </article>
-
-          <article class="panel glow-panel">
-            <div class="panel-title">
-              <h2>一键流程</h2>
-              <p>按课程 6.1/6.2 的实车链路启动 ROS2 节点。</p>
-            </div>
-            <div class="stacked-actions">
-              <button class="neon-btn primary wide" id="slamStartMappingBtn">开始 SLAM 建图</button>
-              <div class="inline-form">
-                <input id="slamMapNameInput" value="yahboomcar_web" />
-                <button class="neon-btn ghost" id="slamSaveMapBtn">保存地图</button>
-              </div>
-              <div class="inline-form">
-                <select id="slamNavAlgorithm">
-                  <option value="dwa">DWA 导航</option>
-                  <option value="teb">TEB 导航</option>
-                  <option value="rtabmap">RTABMap 导航</option>
-                </select>
-                <button class="neon-btn primary" id="slamStartNavBtn">启动导航</button>
-              </div>
-              <button class="neon-btn danger wide" id="slamStopBtn">停止 SLAM/导航</button>
-            </div>
-          </article>
-
-          <article class="panel glow-panel">
-            <div class="panel-title">
-              <h2>位姿与目标</h2>
-              <p>先设置初始位姿，再发送目标点。</p>
-            </div>
-            <div class="pose-grid">
-              <label>X<input id="slamPoseX" type="number" step="0.05" value="0" /></label>
-              <label>Y<input id="slamPoseY" type="number" step="0.05" value="0" /></label>
-              <label>θ<input id="slamPoseTheta" type="number" step="0.05" value="0" /></label>
-            </div>
-            <div class="two-buttons">
-              <button class="neon-btn ghost" id="slamSetInitialBtn">设为初始位姿</button>
-              <button class="neon-btn primary" id="slamSendGoalBtn">发送导航目标</button>
-            </div>
-            <p class="form-note">地图坐标单位是米，θ 是弧度。点击地图会自动填入 X/Y。</p>
           </article>
 
           <article class="panel glow-panel">
             <div class="panel-title">
               <h2>运行状态</h2>
-              <p>用于确认容器、ROS2 topic 和端口是否正常。</p>
+              <p>这里显示端口、容器和 ROS2 topic。</p>
             </div>
             <div class="status-list" id="slamStatusList"></div>
-            <button class="neon-btn ghost wide" id="slamRefreshStatusBtn">刷新状态</button>
           </article>
 
-          <article class="panel glow-panel slam-log-panel">
+          <article class="panel glow-panel">
             <div class="panel-title">
               <h2>车端日志</h2>
-              <p>建图/导航失败时先看这里。</p>
+              <p>如果建图或导航没有启动，优先看这里。</p>
             </div>
             <pre id="slamLogs">暂无日志</pre>
           </article>
         </section>
       </main>
     </div>
-    <script src="/assets/js/app.js"></script>
+    <script src="/assets/js/app.js?v=slam-navigation-v2"></script>
   </body>
 </html>

@@ -50,6 +50,17 @@ def check_api() -> None:
         health = client.get("/api/health")
         if health.status_code != 200 or not health.json().get("ok"):
             raise AssertionError(f"health failed: {health.text}")
+        if health.json().get("ui_version") != "slam-navigation-v2":
+            raise AssertionError(f"unexpected UI version: {health.text}")
+
+        navigation_page = client.get("/navigation")
+        page_text = navigation_page.text
+        if navigation_page.status_code != 200 or "SLAM Navigation v2" not in page_text:
+            raise AssertionError("navigation page is not the SLAM v2 page")
+        if "房间导航与巡逻" in page_text or "家庭地图" in page_text:
+            raise AssertionError("navigation page still contains the old simulated navigation UI")
+        if "no-store" not in navigation_page.headers.get("cache-control", ""):
+            raise AssertionError("navigation page should disable browser cache")
 
         camera = client.get("/api/camera/candidates")
         camera_body = camera.json()

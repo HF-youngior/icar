@@ -10,7 +10,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .adapters.factory import build_adapter
@@ -47,8 +47,23 @@ app.add_middleware(
 
 frontend_dir = resolve_project_path(config.server.frontend_dir)
 assets_dir = frontend_dir / "assets"
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+
+def frontend_response(filename: str) -> FileResponse:
+    response = FileResponse(frontend_dir / filename)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 if assets_dir.exists():
-    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    app.mount("/assets", NoCacheStaticFiles(directory=assets_dir), name="assets")
 
 
 @app.on_event("startup")
@@ -68,42 +83,47 @@ async def on_startup() -> None:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(frontend_dir / "index.html")
+    return frontend_response("index.html")
 
 
 @app.get("/dashboard")
 async def dashboard_page() -> FileResponse:
-    return FileResponse(frontend_dir / "index.html")
+    return frontend_response("index.html")
 
 
 @app.get("/control")
 async def control_page() -> FileResponse:
-    return FileResponse(frontend_dir / "control.html")
+    return frontend_response("control.html")
 
 
 @app.get("/navigation")
 async def navigation_page() -> FileResponse:
-    return FileResponse(frontend_dir / "navigation.html")
+    return frontend_response("navigation.html")
 
 
 @app.get("/vision")
 async def vision_page() -> FileResponse:
-    return FileResponse(frontend_dir / "vision.html")
+    return frontend_response("vision.html")
 
 
 @app.get("/alarms")
 async def alarms_page() -> FileResponse:
-    return FileResponse(frontend_dir / "alarms.html")
+    return frontend_response("alarms.html")
 
 
 @app.get("/reports")
 async def reports_page() -> FileResponse:
-    return FileResponse(frontend_dir / "reports.html")
+    return frontend_response("reports.html")
 
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "adapter": adapter.name, "project_root": str(PROJECT_ROOT)}
+    return {
+        "ok": True,
+        "adapter": adapter.name,
+        "project_root": str(PROJECT_ROOT),
+        "ui_version": "slam-navigation-v2",
+    }
 
 
 @app.get("/api/db/health")

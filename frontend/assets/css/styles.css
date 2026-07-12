@@ -349,6 +349,13 @@ select:focus {
   gap: 14px;
 }
 
+.slam-flow {
+  display: grid;
+  grid-template-columns: minmax(520px, 1.25fr) minmax(320px, 0.75fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
 .map-panel {
   grid-row: span 2;
 }
@@ -578,6 +585,68 @@ select:focus {
   margin-bottom: 12px;
 }
 
+.step-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.step-card {
+  min-height: 124px;
+  padding: 14px;
+  border: 1px solid rgba(120, 240, 255, 0.18);
+  border-radius: 8px;
+  color: var(--text);
+  text-align: left;
+  background: rgba(3, 9, 20, 0.62);
+}
+
+.step-card:hover {
+  border-color: rgba(38, 244, 255, 0.7);
+  box-shadow: 0 0 26px rgba(38, 244, 255, 0.16);
+}
+
+.step-card span {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 10px;
+  border: 1px solid rgba(38, 244, 255, 0.55);
+  border-radius: 50%;
+  color: var(--cyan);
+  font-weight: 900;
+}
+
+.step-card strong,
+.step-card small {
+  display: block;
+}
+
+.step-card small {
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.slam-param-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.slam-param-grid label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.slam-param-grid input,
+.slam-param-grid select {
+  width: 100%;
+  margin-top: 6px;
+}
+
 .stacked-actions {
   display: grid;
   gap: 12px;
@@ -626,11 +695,7 @@ select:focus {
   display: block;
 }
 
-.slam-log-panel {
-  grid-column: 1 / -1;
-}
-
-.slam-log-panel pre {
+pre#slamLogs {
   min-height: 220px;
   max-height: 380px;
   margin: 0;
@@ -730,6 +795,7 @@ select:focus {
   .control-layout,
   .vision-layout,
   .nav-layout,
+  .slam-flow,
   .slam-layout {
     grid-template-columns: 1fr 1fr;
   }
@@ -748,6 +814,7 @@ select:focus {
   .control-layout,
   .vision-layout,
   .nav-layout,
+  .slam-flow,
   .slam-layout,
   .sensor-grid,
   .aux-grid,
@@ -755,7 +822,9 @@ select:focus {
   .map-toolbar,
   .inline-form,
   .two-buttons,
-  .pose-grid {
+  .pose-grid,
+  .step-grid,
+  .slam-param-grid {
     grid-template-columns: 1fr;
   }
 
