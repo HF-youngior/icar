@@ -87,6 +87,12 @@ pip install -r backend/requirements.txt
 python scripts/smoke_test.py
 ```
 
+也可以运行不依赖真实小车和数据库的自动化单元测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## 4. 接真车的两种方式
 
 ### 方式 A：ROS2 CLI 适配器
