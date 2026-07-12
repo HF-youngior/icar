@@ -9,16 +9,32 @@
   <body data-page="control">
     <div class="app-shell">
       <aside class="neon-rail">
-        <a class="brand" href="/dashboard"><span class="brand-mark">IC</span><span><strong>HomeBot</strong><small>智能家居管家机器人</small></span></a>
+        <a class="brand" href="/dashboard">
+          <span class="brand-mark">IC</span>
+          <span><strong>HomeBot</strong><small>智能家居管家机器人</small></span>
+        </a>
         <nav class="rail-nav">
-          <a href="/dashboard">总览</a><a class="active" href="/control">遥控</a><a href="/navigation">导航</a><a href="/vision">视觉</a><a href="/alarms">告警</a><a href="/reports">报告</a>
+          <a href="/dashboard">总览</a>
+          <a class="active" href="/control">遥控</a>
+          <a href="/navigation">导航</a>
+          <a href="/vision">视觉</a>
+          <a href="/alarms">告警</a>
+          <a href="/reports">报告</a>
         </nav>
         <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
       </aside>
       <main class="page">
         <header class="page-head">
-          <div><p class="eyebrow">Manual Drive</p><h1>小车遥控</h1><p class="subhead">用于现场低速联调，急停优先级最高。</p></div>
-          <div class="connect-strip"><input id="serverInput" value="" placeholder="ws://当前页面主机/ws" /><button class="neon-btn primary" id="connectBtn">连接</button><button class="neon-btn ghost" id="disconnectBtn">断开</button></div>
+          <div>
+            <p class="eyebrow">Manual Drive</p>
+            <h1>小车遥控</h1>
+            <p class="subhead">用于现场低速联调，急停优先级最高。</p>
+          </div>
+          <div class="connect-strip">
+            <input id="serverInput" value="" placeholder="ws://当前页面主机/ws" />
+            <button class="neon-btn primary" id="connectBtn">连接</button>
+            <button class="neon-btn ghost" id="disconnectBtn">断开</button>
+          </div>
         </header>
         <section class="control-layout">
           <article class="panel glow-panel">
@@ -29,11 +45,11 @@
               <strong id="speedValue">0.16 m/s</strong>
             </div>
             <div class="neon-dpad">
-              <button data-dir="forward">↑</button>
-              <button data-dir="left">←</button>
-              <button data-dir="stop" class="stop">■</button>
-              <button data-dir="right">→</button>
-              <button data-dir="backward">↓</button>
+              <button data-dir="forward">前</button>
+              <button data-dir="left">左</button>
+              <button data-dir="stop" class="stop">停</button>
+              <button data-dir="right">右</button>
+              <button data-dir="backward">后</button>
             </div>
             <button class="neon-btn danger wide" id="estopBtn">急停</button>
           </article>
@@ -47,6 +63,27 @@
               <div><span>错误</span><strong id="robotError">无</strong></div>
             </div>
             <button class="neon-btn primary wide" id="reconnectCarBtn">重连小车</button>
+          </article>
+        </section>
+        <section class="voice-layout">
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>语音调试</h2>
+              <p>只有启动调试监听后，浏览器才会本地监听；检测到有人说话后才上传腾讯云。</p>
+            </div>
+            <div class="voice-toolbar">
+              <button class="neon-btn primary" id="voiceToggleBtn">启动调试监听</button>
+              <div class="voice-pill" id="voiceStatusPill">未启动</div>
+            </div>
+            <div class="voice-meter" aria-hidden="true">
+              <span id="voiceLevelBar"></span>
+            </div>
+            <div class="voice-grid">
+              <div><span>本地状态</span><strong id="voiceLocalState">待机</strong></div>
+              <div><span>唤醒词</span><strong id="voiceWakePhrase">小比 / 小比小比 / 比格 / 小比格</strong></div>
+              <div><span>腾讯云识别</span><strong id="voiceTranscript">--</strong></div>
+              <div><span>LLM 输出</span><strong id="voiceLlmOutput">--</strong></div>
+            </div>
           </article>
         </section>
       </main>

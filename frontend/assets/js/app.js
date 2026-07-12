@@ -1,9 +1,28 @@
-const page = document.body.dataset.page || "dashboard";
+﻿const page = document.body.dataset.page || "dashboard";
 const state = {
   ws: null,
   connected: false,
   manualHoldTimer: null,
   manualDirection: null,
+  voice: {
+    listening: false,
+    supported: typeof window !== "undefined" && !!(window.AudioContext || window.webkitAudioContext),
+    status: "idle",
+    transcript: "",
+    llmOutput: "",
+    wakePhrase: "小比",
+    level: 0,
+    stream: null,
+    audioContext: null,
+    source: null,
+    processor: null,
+    chunks: [],
+    recording: false,
+    uploading: false,
+    silenceMs: 0,
+    speechMs: 0,
+    voiceFrames: 0,
+  },
   snapshot: {
     robot: {},
     navigation: {},
@@ -73,7 +92,7 @@ function disconnect() {
 }
 
 function setConnection(status) {
-  const labels = { online: "已连接", offline: "离线", connecting: "连接中", error: "连接失败" };
+  const labels = { online: "宸茶繛鎺?, offline: "绂荤嚎", connecting: "杩炴帴涓?, error: "杩炴帴澶辫触" };
   setText("connectionState", labels[status] || status);
   setText("railStatus", labels[status] || status);
   const dot = $("railDot");
@@ -150,10 +169,10 @@ function renderCommon() {
   const { robot, navigation } = state.snapshot;
   setText("adapterText", `adapter ${robot.adapter || "--"}`);
   setText("robotMode", robot.mode || "--");
-  setText("robotTarget", `目标：${robot.target || "无"}`);
-  setText("robotError", robot.last_error || "无");
+  setText("robotTarget", `鐩爣锛?{robot.target || "鏃?}`);
+  setText("robotError", robot.last_error || "鏃?);
   setText("batteryText", robot.battery ? `${robot.battery}%` : "--%");
-  setText("navMessage", navigation.message || "等待任务");
+  setText("navMessage", navigation.message || "绛夊緟浠诲姟");
   const progress = Math.round((navigation.progress || 0) * 100);
   setText("navProgressText", `${progress}%`);
   const progressBar = $("navProgress");
@@ -167,27 +186,28 @@ function renderDashboard() {
   const events = [
     ...state.snapshot.alarms.slice(0, 5).map((item) => ({
       title: item.message,
-      meta: `${item.timestamp} · 告警 · ${item.level}`,
+      meta: `${item.timestamp} 路 鍛婅 路 ${item.level}`,
       level: item.level,
     })),
     ...state.snapshot.vision.slice(0, 3).map((item) => ({
-      title: `视觉检测：${item.label_zh || item.label}`,
-      meta: `${item.timestamp} · 置信度 ${Math.round((item.confidence || 0) * 100)}%`,
+      title: `瑙嗚妫€娴嬶細${item.label_zh || item.label}`,
+      meta: `${item.timestamp} 路 缃俊搴?${Math.round((item.confidence || 0) * 100)}%`,
       level: item.risk === "warning" ? "warning" : "normal",
     })),
     ...state.snapshot.reports.slice(0, 3).map((item) => ({
       title: item.title,
-      meta: `${item.timestamp} · ${item.summary}`,
+      meta: `${item.timestamp} 路 ${item.summary}`,
       level: "normal",
     })),
   ].slice(0, 8);
   timeline.innerHTML = events.length
     ? events.map(renderTimelineItem).join("")
-    : `<div class="timeline-item"><strong>暂无事件</strong><span>连接后会显示实时事件</span></div>`;
+    : `<div class="timeline-item"><strong>鏆傛棤浜嬩欢</strong><span>杩炴帴鍚庝細鏄剧ず瀹炴椂浜嬩欢</span></div>`;
 }
 
 function renderControl() {
   renderCommon();
+  renderVoice();
 }
 
 function renderNavigation() {
@@ -196,12 +216,36 @@ function renderNavigation() {
   drawMap();
 }
 
+function renderVoice() {
+  if (page !== "control") return;
+  const labels = {
+    idle: "待机",
+    listening: "监听中",
+    speech: "检测到说话",
+    uploading: "上传识别中",
+    error: "异常",
+  };
+  const button = $("voiceToggleBtn");
+  if (button) {
+    button.textContent = state.voice.listening ? "停止调试监听" : "启动调试监听";
+  }
+  setText("voiceLocalState", labels[state.voice.status] || state.voice.status);
+  setText("voiceStatusPill", state.voice.listening ? "监听中" : "未启动");
+  setText("voiceWakePhrase", state.voice.wakePhrase || "--");
+  setText("voiceTranscript", state.voice.transcript || "--");
+  setText("voiceLlmOutput", state.voice.llmOutput || "--");
+  const bar = $("voiceLevelBar");
+  if (bar) {
+    bar.style.width = `${Math.max(0, Math.min(100, Math.round(state.voice.level * 100)))}%`;
+  }
+}
+
 function renderVisionPage() {
   const list = $("visionList");
   const events = state.snapshot.vision || [];
   if (events.length) {
     const latest = events[0];
-    setText("visionSummary", `${latest.label_zh || latest.label} · ${Math.round((latest.confidence || 0) * 100)}%`);
+    setText("visionSummary", `${latest.label_zh || latest.label} 路 ${Math.round((latest.confidence || 0) * 100)}%`);
     const image = $("visionImage");
     if (image && latest.image_url) image.src = latest.image_url;
   }
@@ -209,10 +253,10 @@ function renderVisionPage() {
     list.innerHTML = events.length
       ? events.slice(0, 12).map((event) => renderTimelineItem({
         title: event.label_zh || event.label,
-        meta: `${event.timestamp || ""} · 置信度 ${Math.round((event.confidence || 0) * 100)}% · ${event.source || ""}`,
+        meta: `${event.timestamp || ""} 路 缃俊搴?${Math.round((event.confidence || 0) * 100)}% 路 ${event.source || ""}`,
         level: event.risk === "warning" ? "warning" : "normal",
       })).join("")
-      : `<div class="timeline-item"><strong>暂无检测</strong><span>点击检测一次或等待模拟检测事件</span></div>`;
+      : `<div class="timeline-item"><strong>鏆傛棤妫€娴?/strong><span>鐐瑰嚮妫€娴嬩竴娆℃垨绛夊緟妯℃嫙妫€娴嬩簨浠?/span></div>`;
   }
 }
 
@@ -220,19 +264,19 @@ function renderAlarmsPage() {
   const list = $("alarmList");
   const alarms = state.snapshot.alarms || [];
   const open = alarms.filter((alarm) => alarm.status !== "confirmed");
-  setText("alarmSummary", open.length ? `${open.length} 条待处理告警` : "暂无待处理告警");
+  setText("alarmSummary", open.length ? `${open.length} 鏉″緟澶勭悊鍛婅` : "鏆傛棤寰呭鐞嗗憡璀?);
   if (!list) return;
   list.innerHTML = alarms.length
     ? alarms.slice(0, 30).map((alarm) => `
       <div class="alarm-item level-${alarm.level || "normal"}">
         <div>
           <strong>${escapeHtml(alarm.message)}</strong>
-          <span>${alarm.timestamp || ""} · ${alarm.source || ""} · ${alarm.status || ""}</span>
+          <span>${alarm.timestamp || ""} 路 ${alarm.source || ""} 路 ${alarm.status || ""}</span>
         </div>
-        <button class="neon-btn ghost" data-alarm="${alarm.alarm_id}" ${alarm.status === "confirmed" ? "disabled" : ""}>确认</button>
+        <button class="neon-btn ghost" data-alarm="${alarm.alarm_id}" ${alarm.status === "confirmed" ? "disabled" : ""}>纭</button>
       </div>
     `).join("")
-    : `<div class="alarm-item"><div><strong>暂无告警</strong><span>传感器、视觉和急停事件会显示在这里</span></div></div>`;
+    : `<div class="alarm-item"><div><strong>鏆傛棤鍛婅</strong><span>浼犳劅鍣ㄣ€佽瑙夊拰鎬ュ仠浜嬩欢浼氭樉绀哄湪杩欓噷</span></div></div>`;
   list.querySelectorAll("[data-alarm]").forEach((btn) => {
     btn.addEventListener("click", () => send("alarm_confirm", { alarm_id: btn.dataset.alarm, operator: "web" }));
   });
@@ -246,10 +290,10 @@ function renderReportsPage() {
     ? reports.slice(0, 30).map((report) => `
       <div class="report-item">
         <strong>${escapeHtml(report.title)}</strong>
-        <span>${report.timestamp || ""} · ${escapeHtml(report.summary || "")}</span>
+        <span>${report.timestamp || ""} 路 ${escapeHtml(report.summary || "")}</span>
       </div>
     `).join("")
-    : `<div class="report-item"><strong>暂无报告</strong><span>导航到达或巡逻完成后会生成报告</span></div>`;
+    : `<div class="report-item"><strong>鏆傛棤鎶ュ憡</strong><span>瀵艰埅鍒拌揪鎴栧贰閫诲畬鎴愬悗浼氱敓鎴愭姤鍛?/span></div>`;
 }
 
 function renderSensors() {
@@ -385,6 +429,251 @@ function mapPose(pose = {}, width, height) {
   };
 }
 
+function setVoiceStatus(status) {
+  state.voice.status = status;
+  renderVoice();
+}
+
+async function toggleVoiceListening() {
+  if (state.voice.listening) {
+    stopVoiceListening();
+    return;
+  }
+  await startVoiceListening();
+}
+
+async function startVoiceListening() {
+  if (!state.voice.supported) {
+    state.voice.llmOutput = "褰撳墠娴忚鍣ㄤ笉鏀寔鏈湴闊抽澶勭悊銆?;
+    setVoiceStatus("error");
+    return;
+  }
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+    const audioContext = new AudioCtx();
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    processor.onaudioprocess = handleVoiceAudio;
+
+    state.voice.stream = stream;
+    state.voice.audioContext = audioContext;
+    state.voice.source = source;
+    state.voice.processor = processor;
+    state.voice.listening = true;
+    state.voice.transcript = "";
+    state.voice.llmOutput = "";
+    state.voice.level = 0;
+    setVoiceStatus("listening");
+  } catch (error) {
+    console.warn("voice start failed", error);
+    state.voice.llmOutput = "楹﹀厠椋庡惎鍔ㄥけ璐ワ紝璇锋鏌ユ祻瑙堝櫒鏉冮檺銆?;
+    setVoiceStatus("error");
+  }
+}
+
+function stopVoiceListening() {
+  finalizeVoiceUtterance(true);
+  state.voice.processor?.disconnect();
+  state.voice.source?.disconnect();
+  state.voice.audioContext?.close();
+  state.voice.stream?.getTracks().forEach((track) => track.stop());
+  state.voice.stream = null;
+  state.voice.audioContext = null;
+  state.voice.source = null;
+  state.voice.processor = null;
+  state.voice.listening = false;
+  state.voice.recording = false;
+  state.voice.uploading = false;
+  state.voice.level = 0;
+  setVoiceStatus("idle");
+}
+
+function handleVoiceAudio(event) {
+  if (!state.voice.listening || state.voice.uploading) return;
+  const input = event.inputBuffer.getChannelData(0);
+  const chunk = new Float32Array(input);
+  const rms = computeRms(chunk);
+  const normalizedLevel = Math.min(1, rms * 10);
+  state.voice.level = normalizedLevel;
+
+  const sampleRate = event.inputBuffer.sampleRate || 48000;
+  const chunkMs = (chunk.length / sampleRate) * 1000;
+  const isSpeech = rms >= 0.035;
+
+  if (isSpeech) {
+    state.voice.voiceFrames += 1;
+  } else {
+    state.voice.voiceFrames = 0;
+  }
+
+  if (!state.voice.recording && state.voice.voiceFrames >= 2) {
+    state.voice.recording = true;
+    state.voice.chunks = [];
+    state.voice.silenceMs = 0;
+    state.voice.speechMs = 0;
+    setVoiceStatus("speech");
+  }
+
+  if (!state.voice.recording) {
+    renderVoice();
+    return;
+  }
+
+  state.voice.chunks.push(chunk);
+  state.voice.speechMs += chunkMs;
+  state.voice.silenceMs = isSpeech ? 0 : state.voice.silenceMs + chunkMs;
+
+  if (state.voice.speechMs >= 1800 && state.voice.silenceMs >= 700) {
+    finalizeVoiceUtterance(false, sampleRate);
+    return;
+  }
+
+  if (state.voice.speechMs >= 5000) {
+    finalizeVoiceUtterance(false, sampleRate);
+    return;
+  }
+
+  renderVoice();
+}
+
+function finalizeVoiceUtterance(cancelled = false, inputSampleRate = 48000) {
+  const chunks = state.voice.chunks;
+  state.voice.chunks = [];
+  state.voice.recording = false;
+  state.voice.silenceMs = 0;
+  state.voice.speechMs = 0;
+  state.voice.voiceFrames = 0;
+
+  if (cancelled || !chunks.length || state.voice.uploading) {
+    if (state.voice.listening) setVoiceStatus("listening");
+    return;
+  }
+
+  const wavBlob = buildWavBlob(chunks, inputSampleRate, 16000);
+  uploadVoiceBlob(wavBlob);
+}
+
+async function uploadVoiceBlob(blob) {
+  state.voice.uploading = true;
+  setVoiceStatus("uploading");
+  try {
+    const response = await fetch("/api/voice/process", {
+      method: "POST",
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-Audio-Format": "wav",
+      },
+      body: blob,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "voice request failed");
+    }
+    state.voice.transcript = data.transcript || "";
+    state.voice.llmOutput = data.llm_output || (data.wake_phrase_matched ? "宸插尮閰嶅敜閱掕瘝" : "鏈尮閰嶅敜閱掕瘝");
+    state.voice.wakePhrase = data.wake_phrase || state.voice.wakePhrase;
+    setVoiceStatus("listening");
+  } catch (error) {
+    console.warn("voice upload failed", error);
+    state.voice.llmOutput = error.message || "璇煶澶勭悊澶辫触";
+    setVoiceStatus("error");
+  } finally {
+    state.voice.uploading = false;
+    if (state.voice.listening && state.voice.status !== "error") {
+      setVoiceStatus("listening");
+    }
+  }
+}
+
+function computeRms(chunk) {
+  let sum = 0;
+  for (let i = 0; i < chunk.length; i += 1) {
+    sum += chunk[i] * chunk[i];
+  }
+  return Math.sqrt(sum / Math.max(1, chunk.length));
+}
+
+function buildWavBlob(chunks, inputSampleRate, targetSampleRate) {
+  const merged = mergeFloat32Chunks(chunks);
+  const resampled = resampleFloat32(merged, inputSampleRate, targetSampleRate);
+  const wavBuffer = encodeWav16Bit(resampled, targetSampleRate);
+  return new Blob([wavBuffer], { type: "audio/wav" });
+}
+
+function mergeFloat32Chunks(chunks) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return merged;
+}
+
+function resampleFloat32(input, inputSampleRate, targetSampleRate) {
+  if (inputSampleRate === targetSampleRate) {
+    return input;
+  }
+  const ratio = inputSampleRate / targetSampleRate;
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i += 1) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(input.length, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    let count = 0;
+    for (let j = start; j < end; j += 1) {
+      sum += input[j];
+      count += 1;
+    }
+    output[i] = count ? sum / count : input[start] || 0;
+  }
+  return output;
+}
+
+function encodeWav16Bit(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += 2;
+  }
+  return buffer;
+}
+
+function writeAscii(view, offset, value) {
+  for (let i = 0; i < value.length; i += 1) {
+    view.setUint8(offset + i, value.charCodeAt(i));
+  }
+}
+
 function bindEvents() {
   initConnectionInput();
   $("connectBtn")?.addEventListener("click", connect);
@@ -408,6 +697,9 @@ function bindEvents() {
   });
   window.addEventListener("pointerup", () => endManualHold(true));
   window.addEventListener("blur", () => endManualHold(true));
+  $("voiceToggleBtn")?.addEventListener("click", () => {
+    toggleVoiceListening();
+  });
 }
 
 async function loadSnapshot() {
@@ -422,13 +714,13 @@ async function loadSnapshot() {
 
 async function reconnectCar() {
   const button = $("reconnectCarBtn");
-  if (button) button.textContent = "重连中...";
+  if (button) button.textContent = "閲嶈繛涓?..";
   try {
     await fetch("/api/car/reconnect", { method: "POST" });
   } catch (error) {
     console.warn("car reconnect failed", error);
   } finally {
-    if (button) button.textContent = "重连小车";
+    if (button) button.textContent = "閲嶈繛灏忚溅";
     await loadSnapshot();
   }
 }
@@ -486,3 +778,4 @@ function escapeHtml(value) {
 
 bindEvents();
 loadSnapshot().then(connect);
+
