@@ -55,10 +55,14 @@ class RosmasterController:
             duration_ms = payload[4] * 10 if payload[3] else 0
             return self.apply_buzzer(duration_ms)
 
-        if command == 0x30 and len(payload) >= 7:
+        if command == 0x05 and len(payload) >= 7 and payload[3] in {0, 1} and payload[4] in {0, 1}:
+            duration_ms = payload[5] | (payload[6] << 8)
+            return self.apply_headlights(bool(payload[3]), bool(payload[4]), duration_ms)
+
+        if command in {0x05, 0x30} and len(payload) >= 7:
             return self.apply_light(payload[3], payload[4], payload[5], payload[6])
 
-        if command == 0x31 and len(payload) >= 5:
+        if command in {0x06, 0x31} and len(payload) >= 5:
             return self.apply_light_effect(payload[3], payload[4])
 
         return None
@@ -114,11 +118,32 @@ class RosmasterController:
         return f"buzzer_{duration_ms}ms"
 
     def apply_light(self, led_id: int, red: int, green: int, blue: int) -> str:
+        enabled = any((red, green, blue))
         with self.lock:
-            self._call_optional_with_args(
-                ["set_colorful_lamps", "set_colorful_lamp", "set_led", "set_rgb"],
-                [(led_id, red, green, blue), (red, green, blue)],
+            called = self._call_optional_with_args(
+                [
+                    "set_colorful_lamps",
+                    "set_colorful_lamp",
+                    "set_rgb_lamp",
+                    "set_rgb",
+                    "set_led",
+                    "set_light",
+                    "set_lamp",
+                    "set_car_light",
+                    "set_car_lights",
+                    "set_headlight",
+                    "set_headlights",
+                ],
+                [
+                    (led_id, red, green, blue),
+                    (red, green, blue),
+                    (led_id, enabled),
+                    (enabled,),
+                    (1 if enabled else 0,),
+                ],
             )
+            if not called:
+                self._apply_discrete_lights(enabled)
         return f"light_{led_id}_{red}_{green}_{blue}"
 
     def apply_light_effect(self, effect: int, speed: int) -> str:
@@ -128,6 +153,22 @@ class RosmasterController:
                 [(effect, speed, 255), (effect, speed), (effect,)],
             )
         return f"light_effect_{effect}_{speed}"
+
+    def apply_headlights(self, left_enabled: bool, right_enabled: bool, duration_ms: int = 0) -> str:
+        enabled = left_enabled or right_enabled
+        with self.lock:
+            called = False
+            for side, side_enabled in (("left", left_enabled), ("right", right_enabled)):
+                called = self._apply_side_light(side, side_enabled) or called
+            if not called:
+                self._apply_discrete_lights(enabled)
+            self._try_raw_protocol_frame(0x05, [
+                1 if left_enabled else 0,
+                1 if right_enabled else 0,
+                duration_ms & 0xFF,
+                (duration_ms >> 8) & 0xFF,
+            ])
+        return f"headlights_left_{int(left_enabled)}_right_{int(right_enabled)}_{duration_ms}ms"
 
     def _call_optional_with_args(self, names, arg_sets) -> bool:
         for name in names:
@@ -144,6 +185,103 @@ class RosmasterController:
                     if self.debug:
                         print(f"{name}{args} failed: {exc}", flush=True)
                     return False
+        return False
+
+    def _apply_discrete_lights(self, enabled: bool) -> bool:
+        called = False
+        if enabled:
+            no_arg_names = [
+                "set_on_left_light",
+                "set_on_right_light",
+                "left_light_on",
+                "right_light_on",
+                "turn_on_left_light",
+                "turn_on_right_light",
+            ]
+        else:
+            no_arg_names = [
+                "set_off_left_light",
+                "set_off_right_light",
+                "left_light_off",
+                "right_light_off",
+                "turn_off_left_light",
+                "turn_off_right_light",
+            ]
+        for name in no_arg_names:
+            method = getattr(self.bot, name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+                called = True
+            except Exception as exc:
+                if self.debug:
+                    print(f"{name}() failed: {exc}", flush=True)
+        called = self._call_optional_with_args(
+            [
+                "set_left_light",
+                "set_right_light",
+                "set_front_light",
+                "set_rear_light",
+                "set_head_light",
+                "set_tail_light",
+            ],
+            [(enabled,), (1 if enabled else 0,)],
+        ) or called
+        return called
+
+    def _apply_side_light(self, side: str, enabled: bool) -> bool:
+        if side not in {"left", "right"}:
+            return False
+        if enabled:
+            no_arg_names = [
+                f"set_on_{side}_light",
+                f"{side}_light_on",
+                f"turn_on_{side}_light",
+            ]
+        else:
+            no_arg_names = [
+                f"set_off_{side}_light",
+                f"{side}_light_off",
+                f"turn_off_{side}_light",
+            ]
+        called = self._call_optional_with_args(no_arg_names, ((),))
+        called = self._call_optional_with_args(
+            [f"set_{side}_light", f"set_{side}_headlight"],
+            ((enabled,), (1 if enabled else 0,)),
+        ) or called
+        return called
+
+    def _try_raw_protocol_frame(self, func: int, params: list[int]) -> bool:
+        length = len(params) + 3
+        body = [length, func] + [max(0, min(255, int(value))) for value in params]
+        checksum = sum(body) & 0xFF
+        frame = bytes([0xFF, 0xFC] + body + [checksum])
+        for name in ("send_data", "send_cmd", "send_command", "uart_send", "serial_write", "_write_data", "write_data"):
+            method = getattr(self.bot, name, None)
+            if not callable(method):
+                continue
+            for args in ((frame,), (list(frame),), (bytearray(frame),)):
+                try:
+                    method(*args)
+                    return True
+                except TypeError:
+                    continue
+                except Exception as exc:
+                    if self.debug:
+                        print(f"{name}(raw light frame) failed: {exc}", flush=True)
+                    break
+        for attr in ("ser", "serial", "uart", "_serial", "_Rosmaster__ser"):
+            stream = getattr(self.bot, attr, None)
+            writer = getattr(stream, "write", None)
+            if not callable(writer):
+                continue
+            try:
+                writer(frame)
+                return True
+            except Exception as exc:
+                if self.debug:
+                    print(f"{attr}.write(raw light frame) failed: {exc}", flush=True)
         return False
 
     def _stop(self) -> None:

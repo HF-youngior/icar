@@ -1,4 +1,7 @@
 .venv/
+.pip-cache/
+.tmp-pip/
+.python-userbase/
 backend/.vendor/
 __pycache__/
 *.pyc
@@ -9,6 +12,8 @@ __pycache__/
 .env.ps1
 data/reports/*.json
 data/*.log
+data/cruise_routes.json
+data/tmp/
 data/logs/*.log
 data/captures/*
 !data/captures/.gitkeep

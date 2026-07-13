@@ -110,7 +110,9 @@ else {
     $StartScript = @(
         "cd $(Quote-Bash($RemoteDir))",
         "test -f app.py",
-        "DISPLAY=$(Quote-Bash($Display)) XAUTHORITY=/home/$CarUser/.Xauthority nohup python3 $(Quote-Bash($RemoteApp)) </dev/null > $(Quote-Bash($RemoteLog)) 2>&1 & echo `$! > $(Quote-Bash($RemotePid))",
+        "DISPLAY=$(Quote-Bash($Display)) XAUTHORITY=/home/$CarUser/.Xauthority nohup setsid -f python3 $(Quote-Bash($RemoteApp)) </dev/null > $(Quote-Bash($RemoteLog)) 2>&1",
+        "sleep 0.8",
+        "pgrep -f '[a]pp.py' | head -n 1 > $(Quote-Bash($RemotePid)) || true",
         "echo started-app.py",
         "exit 0"
     ) -join "; "

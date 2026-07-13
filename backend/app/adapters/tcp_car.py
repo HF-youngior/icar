@@ -163,15 +163,27 @@ class TcpCarAdapter(CarAdapter):
         blue = int(values.get("b", 255 if enabled else 0))
         rgb = [max(0, min(255, value)) for value in (red, green, blue)]
         led_ids = values.get("led_ids") or [0, 1, 2, 3, 4]
+        left_light = 1 if enabled else 0
+        right_light = 1 if enabled else 0
+        duration_ms = max(0, min(65535, int(values.get("duration_ms", 0))))
+        duration_low = duration_ms & 0xFF
+        duration_high = (duration_ms >> 8) & 0xFF
+
+        # Teacher-provided iCAR firmware uses FUNC_RGB=0x05 for the
+        # physical left/right headlights: left, right, duration low/high.
+        # Keep RGB/App-compatible frames after it as fallbacks for other
+        # car images.
         payloads = [
-            self._encode_raw_frame([0x01, 0x30, 0x0A, int(led_id), *rgb])
-            for led_id in led_ids
+            self._encode_raw_frame([car_type, 0x05, 0x08, left_light, right_light, duration_low, duration_high])
+            for car_type in (0x00, 0x01)
         ]
-        effect = 1 if enabled else 0
-        speed = 80 if enabled else 0
-        payloads.append(self._encode_raw_frame([0x01, 0x31, 0x06, effect, speed]))
+
         payloads.extend(
             self._encode_raw_frame([0x03, 0x20, 0x08, int(led_id), *rgb])
+            for led_id in led_ids
+        )
+        payloads.extend(
+            self._encode_raw_frame([0x01, 0x30, 0x08, int(led_id), *rgb])
             for led_id in led_ids
         )
         return payloads

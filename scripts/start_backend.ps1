@@ -8,6 +8,8 @@ if (Test-Path $LocalEnvPath) {
 $BackendPath = Join-Path $ProjectRoot "backend"
 $VendorPath = Join-Path $BackendPath ".vendor"
 $env:PYTHONPATH = "$VendorPath;$BackendPath"
+$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$PythonExe = if (Test-Path $VenvPython) { $VenvPython } else { "python" }
 $HostValue = if ($env:ICAR_HOST) { $env:ICAR_HOST } else { "0.0.0.0" }
 $PortValue = if ($env:ICAR_PORT) { $env:ICAR_PORT } else { "8000" }
 $ReloadArgs = if ($env:ICAR_RELOAD -eq "1") { @("--reload") } else { @() }
@@ -75,6 +77,7 @@ function Get-LocalIpv4Candidates {
 
 Write-Host ""
 Write-Host "iCar backend starting..." -ForegroundColor Cyan
+Write-Host "Python: $PythonExe" -ForegroundColor Gray
 Write-Host "Bind host: $HostValue" -ForegroundColor Gray
 Write-Host "Bind port: $PortValue" -ForegroundColor Gray
 Write-Host ""
@@ -98,6 +101,7 @@ if ($HostValue -eq "0.0.0.0") {
     Write-Host "  Dashboard: http://127.0.0.1:${PortValue}/dashboard"
     Write-Host "  Control:   http://127.0.0.1:${PortValue}/control"
     Write-Host "  SLAM Nav:  http://127.0.0.1:${PortValue}/navigation"
+    Write-Host "  Cruise:    http://127.0.0.1:${PortValue}/cruise"
     Write-Host ""
     Write-Host "Shareable LAN URLs (phone and car should be on the same hotspot):" -ForegroundColor Green
     $Candidates = @(Get-LocalIpv4Candidates)
@@ -105,6 +109,7 @@ if ($HostValue -eq "0.0.0.0") {
         foreach ($Candidate in $Candidates) {
             Write-Host "  [$($Candidate.InterfaceAlias)] http://$($Candidate.IPAddress):${PortValue}/control"
             Write-Host "  [$($Candidate.InterfaceAlias)] http://$($Candidate.IPAddress):${PortValue}/navigation"
+            Write-Host "  [$($Candidate.InterfaceAlias)] http://$($Candidate.IPAddress):${PortValue}/cruise"
         }
         Write-Host ""
         Write-Host "Usually the Windows hotspot address is something like 192.168.137.1." -ForegroundColor Yellow
@@ -119,6 +124,7 @@ elseif ($HostValue -eq "127.0.0.1" -or $HostValue -eq "localhost") {
     Write-Host "  Dashboard: http://127.0.0.1:${PortValue}/dashboard"
     Write-Host "  Control:   http://127.0.0.1:${PortValue}/control"
     Write-Host "  SLAM Nav:  http://127.0.0.1:${PortValue}/navigation"
+    Write-Host "  Cruise:    http://127.0.0.1:${PortValue}/cruise"
     Write-Host ""
     Write-Host "To allow phone access on the same hotspot, run:" -ForegroundColor Yellow
     Write-Host '  $env:ICAR_HOST="0.0.0.0"'
@@ -128,6 +134,7 @@ else {
     Write-Host "  Dashboard: http://${HostValue}:${PortValue}/dashboard"
     Write-Host "  Control:   http://${HostValue}:${PortValue}/control"
     Write-Host "  SLAM Nav:  http://${HostValue}:${PortValue}/navigation"
+    Write-Host "  Cruise:    http://${HostValue}:${PortValue}/cruise"
 }
 
 Write-Host ""
@@ -136,4 +143,4 @@ Write-Host "If you still see '房间导航与巡逻', stop the old backend proce
 Write-Host "If Windows Firewall asks, allow access on Private networks." -ForegroundColor Yellow
 Write-Host ""
 
-python -m uvicorn app.main:app --host $HostValue --port $PortValue @ReloadArgs
+& $PythonExe -m uvicorn app.main:app --host $HostValue --port $PortValue @ReloadArgs

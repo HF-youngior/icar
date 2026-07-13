@@ -14,6 +14,21 @@ const state = {
     active: false,
     currentUrl: "",
   },
+  gesture: {
+    enabled: false,
+    loading: false,
+    model: null,
+    timer: null,
+    processing: false,
+    lastGesture: "none",
+    stableGesture: "none",
+    stableCount: 0,
+    lastSentGesture: "",
+    lastCommandAt: 0,
+    activeDirection: "",
+    status: "idle",
+    message: "手势控制未开启",
+  },
   visionControl: {
     running: false,
     targets: ["person"],
@@ -36,6 +51,24 @@ const state = {
     goalMonitorBusy: false,
     activeGoalId: "",
     initialPoseSent: false,
+  },
+  cruise: {
+    gridWidth: 48,
+    gridHeight: 32,
+    pose: { x: 3, y: 28, heading: 0 },
+    waypoints: [],
+    obstacles: [],
+    selectedWaypointId: "",
+    selectedMode: "select",
+    nextWaypointNumber: 1,
+    plan: null,
+    savedRoutes: [],
+    running: false,
+    paused: false,
+    stopRequested: false,
+    executionPromise: null,
+    log: [],
+    colors: ["#ff4fd8", "#ffcf5a", "#26f4ff", "#9f6bff", "#7dff9b", "#ff8a5b"],
   },
   voice: {
     listening: false,
@@ -227,6 +260,7 @@ function render() {
   if (page === "dashboard") renderDashboard();
   if (page === "control") renderControl();
   if (page === "navigation") renderNavigation();
+  if (page === "cruise") renderCruisePage();
   if (page === "vision") renderVisionPage();
   if (page === "alarms") renderAlarmsPage();
   if (page === "reports") renderReportsPage();
@@ -333,6 +367,7 @@ function renderVisionPage() {
       })).join("")
       : `<div class="timeline-item"><strong>暂无检测</strong><span>选择检测目标后点击“检测一次”或“开始检测”</span></div>`;
   }
+  renderGestureStatus();
 }
 
 function renderDetectionImage(event) {
@@ -462,19 +497,28 @@ async function sendAuxControl(action, payload = {}) {
   setText("auxResult", "发送中...");
   try {
     const result = await postJson("/api/control/aux", { action, ...payload });
+    const ok = result.ok !== false;
     let message = `已执行 ${action} · ${result.adapter || "tcp"}`;
     if (action === "buzzer") {
       message = "短蜂鸣已发送";
+    } else if (action === "voice") {
+      message = result.spoken
+        ? `语音已播放：${result.engine || "tts"}`
+        : `未确认语音播放，已尝试备用提示：${result.engine || result.message || "unknown"}`;
     } else if (action === "light" && result.runtime) {
       const sshOk = result.runtime?.ok ? "SSH 灯控 OK" : "SSH 灯控未确认";
       const tcpOk = result.tcp?.ok ? "TCP 帧 OK" : "TCP 帧未确认";
-      message = `灯光指令已发送 · ${sshOk} / ${tcpOk}`;
+      const methods = result.runtime?.result?.methods?.length || 0;
+      message = ok
+        ? `灯光指令已发送 · ${sshOk} / ${tcpOk}${methods ? ` · ${methods} 种方法` : ""}`
+        : `灯光未确认生效 · ${sshOk} / ${tcpOk}`;
     } else if (action === "follow_line") {
       message = payload.enabled ? "已开启循迹模式" : "已关闭循迹模式";
     }
+    if (!ok && result.warning) message = `${message}：${result.warning}`;
     setText("auxResult", message);
     await loadSnapshot();
-    return true;
+    return ok;
   } catch (error) {
     console.warn("aux control failed", error);
     setText("auxResult", `发送失败：${error.message || error}`);
@@ -693,12 +737,384 @@ function stopCamera() {
   const image = $("visionImage");
   state.camera.active = false;
   state.camera.currentUrl = "";
+  stopGestureControl();
   if (image) {
     image.onload = null;
     image.onerror = null;
     image.src = "/assets/sample-detection.svg";
   }
   setText("cameraStatus", "摄像头已停止");
+}
+
+const HAND_CONNECTIONS_LOCAL = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+const GESTURE_COMMANDS = {
+  fist: { direction: "stop", label: "握拳 停止" },
+  one: { direction: "backward", label: "1 后退" },
+  two: { direction: "left", label: "2 左转" },
+  three: { direction: "right", label: "3 右转" },
+  five: { direction: "forward", label: "五指张开 前进" },
+};
+
+const GESTURE_REPEAT_INTERVAL_MS = 220;
+
+function renderGestureStatus() {
+  if (page !== "vision") return;
+  const button = $("gestureToggleBtn");
+  if (button) {
+    button.textContent = state.gesture.enabled ? "关闭手势控制" : "开启手势控制";
+    button.disabled = state.gesture.loading;
+  }
+  const status = $("gestureStatus");
+  if (status) {
+    status.textContent = state.gesture.message || "手势控制未开启";
+    status.classList.toggle("ready", state.gesture.status === "ready");
+    status.classList.toggle("warning", state.gesture.status === "warning");
+    status.classList.toggle("danger", state.gesture.status === "danger");
+  }
+}
+
+function setGestureStatus(message, status = "idle") {
+  state.gesture.message = message;
+  state.gesture.status = status;
+  renderGestureStatus();
+}
+
+function loadScriptOnce(src, globalName) {
+  if (globalName && window[globalName]) return Promise.resolve();
+  const existing = document.querySelector(`script[src="${src}"]`);
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      window.setTimeout(resolve, 500);
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureGestureModel() {
+  if (state.gesture.model) return state.gesture.model;
+  const handsBaseUrl = "/assets/vendor/mediapipe/hands";
+  await loadScriptOnce(`${handsBaseUrl}/hands.js`, "Hands");
+  if (!window.Hands) {
+    throw new Error("MediaPipe Hands 未加载");
+  }
+  const hands = new window.Hands({
+    locateFile: (file) => `${handsBaseUrl}/${file}`,
+  });
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.65,
+    minTrackingConfidence: 0.55,
+  });
+  hands.onResults(handleGestureResults);
+  state.gesture.model = hands;
+  return hands;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function preferGestureCameraSource() {
+  if (!state.camera.candidates.length) {
+    await loadCameraCandidates();
+  }
+  const current = state.camera.candidates[state.camera.index];
+  if (current?.url?.startsWith("/api/camera/stream")) return;
+  const preferredIndex = state.camera.candidates.findIndex((candidate) => (
+    candidate.url?.startsWith("/api/camera/stream") && candidate.label.includes("6500")
+  ));
+  const fallbackIndex = state.camera.candidates.findIndex((candidate) => candidate.url?.startsWith("/api/camera/stream"));
+  const targetIndex = preferredIndex >= 0 ? preferredIndex : fallbackIndex;
+  if (targetIndex >= 0) {
+    startCameraAt(targetIndex);
+    await delay(900);
+  }
+}
+
+async function toggleGestureControl() {
+  if (state.gesture.enabled || state.gesture.loading) {
+    stopGestureControl();
+    return;
+  }
+  await startGestureControl();
+}
+
+async function startGestureControl() {
+  if (page !== "vision") return;
+  state.gesture.loading = true;
+  renderGestureStatus();
+  setGestureStatus("正在加载 MediaPipe Hands...", "warning");
+  try {
+    await preferGestureCameraSource();
+    await ensureGestureModel();
+    state.gesture.enabled = true;
+    state.gesture.loading = false;
+    state.gesture.lastSentGesture = "";
+    state.gesture.activeDirection = "";
+    setGestureStatus("等待手掌进入画面", "warning");
+    scheduleGestureFrame(80);
+  } catch (error) {
+    console.warn("gesture start failed", error);
+    state.gesture.enabled = false;
+    state.gesture.loading = false;
+    setGestureStatus(`手势控制启动失败：${error.message || error}`, "danger");
+  }
+}
+
+function stopGestureControl() {
+  if (state.gesture.timer) {
+    clearTimeout(state.gesture.timer);
+    state.gesture.timer = null;
+  }
+  state.gesture.enabled = false;
+  state.gesture.loading = false;
+  state.gesture.processing = false;
+  state.gesture.lastGesture = "none";
+  state.gesture.stableGesture = "none";
+  state.gesture.stableCount = 0;
+  state.gesture.lastSentGesture = "";
+  if (state.gesture.activeDirection) {
+    sendStopNow(true).catch((error) => console.warn("gesture stop failed", error));
+  }
+  state.gesture.activeDirection = "";
+  clearGestureCanvas();
+  setGestureStatus("手势控制未开启", "idle");
+}
+
+function scheduleGestureFrame(ms = 160) {
+  if (!state.gesture.enabled) return;
+  if (state.gesture.timer) clearTimeout(state.gesture.timer);
+  state.gesture.timer = window.setTimeout(processGestureFrame, ms);
+}
+
+async function processGestureFrame() {
+  if (!state.gesture.enabled) return;
+  const image = $("visionImage");
+  if (!image || !image.complete || !image.naturalWidth) {
+    setGestureStatus("等待摄像头画面", "warning");
+    scheduleGestureFrame(220);
+    return;
+  }
+  if (state.gesture.processing) {
+    scheduleGestureFrame(120);
+    return;
+  }
+  state.gesture.processing = true;
+  try {
+    await state.gesture.model.send({ image });
+  } catch (error) {
+    console.warn("gesture frame failed", error);
+    setGestureStatus(`手势识别失败：${error.message || error}`, "danger");
+  } finally {
+    state.gesture.processing = false;
+    scheduleGestureFrame(170);
+  }
+}
+
+function clearGestureCanvas() {
+  const canvas = $("gestureCanvas");
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  if (context) context.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function resizeGestureCanvas() {
+  const canvas = $("gestureCanvas");
+  const frame = canvas?.parentElement;
+  if (!canvas || !frame) return null;
+  const rect = frame.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return canvas;
+}
+
+function imageContentRect(image, canvas) {
+  const imageWidth = image?.naturalWidth || canvas.width;
+  const imageHeight = image?.naturalHeight || canvas.height;
+  const scale = Math.min(canvas.width / imageWidth, canvas.height / imageHeight);
+  const width = imageWidth * scale;
+  const height = imageHeight * scale;
+  return {
+    x: (canvas.width - width) / 2,
+    y: (canvas.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+function toCanvasPoint(point, rect) {
+  return {
+    x: rect.x + point.x * rect.width,
+    y: rect.y + point.y * rect.height,
+  };
+}
+
+function drawHandSkeleton(landmarks) {
+  const canvas = resizeGestureCanvas();
+  const image = $("visionImage");
+  if (!canvas || !landmarks?.length) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const rect = imageContentRect(image, canvas);
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.strokeStyle = "rgba(38, 244, 255, 0.92)";
+  HAND_CONNECTIONS_LOCAL.forEach(([from, to]) => {
+    const a = toCanvasPoint(landmarks[from], rect);
+    const b = toCanvasPoint(landmarks[to], rect);
+    context.beginPath();
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.stroke();
+  });
+  landmarks.forEach((point, index) => {
+    const p = toCanvasPoint(point, rect);
+    context.beginPath();
+    context.fillStyle = index % 4 === 0 ? "rgba(255, 207, 90, 0.96)" : "rgba(125, 255, 155, 0.96)";
+    context.arc(p.x, p.y, index % 4 === 0 ? 5 : 4, 0, Math.PI * 2);
+    context.fill();
+  });
+}
+
+function distance(a, b) {
+  return Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0), (a.z || 0) - (b.z || 0));
+}
+
+function isFingerExtended(landmarks, tip, pip, mcp) {
+  const wrist = landmarks[0];
+  const tipPoint = landmarks[tip];
+  const pipPoint = landmarks[pip];
+  const mcpPoint = landmarks[mcp];
+  const verticalOpen = tipPoint.y < pipPoint.y - 0.018;
+  const radialOpen = distance(tipPoint, wrist) > distance(pipPoint, wrist) * 1.12
+    && distance(tipPoint, mcpPoint) > distance(pipPoint, mcpPoint) * 1.02;
+  return verticalOpen || radialOpen;
+}
+
+function isThumbExtended(landmarks) {
+  const wrist = landmarks[0];
+  const thumbTip = landmarks[4];
+  const thumbIp = landmarks[3];
+  const indexMcp = landmarks[5];
+  return distance(thumbTip, indexMcp) > distance(thumbIp, indexMcp) * 1.28
+    && distance(thumbTip, wrist) > distance(landmarks[2], wrist) * 1.05;
+}
+
+function classifyGesture(landmarks) {
+  if (!landmarks?.length) return "none";
+  const fingers = {
+    index: isFingerExtended(landmarks, 8, 6, 5),
+    middle: isFingerExtended(landmarks, 12, 10, 9),
+    ring: isFingerExtended(landmarks, 16, 14, 13),
+    pinky: isFingerExtended(landmarks, 20, 18, 17),
+    thumb: isThumbExtended(landmarks),
+  };
+  const raised = [fingers.index, fingers.middle, fingers.ring, fingers.pinky].filter(Boolean).length;
+  if (raised === 0) return "fist";
+  if (fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) return "one";
+  if (fingers.index && fingers.middle && !fingers.ring && !fingers.pinky) return "two";
+  if (fingers.index && fingers.middle && fingers.ring && !fingers.pinky) return "three";
+  if (raised === 4 && fingers.thumb) return "five";
+  return "unknown";
+}
+
+function updateStableGesture(gesture) {
+  if (gesture === state.gesture.lastGesture) {
+    state.gesture.stableCount += 1;
+  } else {
+    state.gesture.lastGesture = gesture;
+    state.gesture.stableCount = 1;
+  }
+  if (state.gesture.stableCount >= 2) {
+    state.gesture.stableGesture = gesture;
+  }
+}
+
+function gestureSpeed() {
+  const raw = Number($("gestureSpeedInput")?.value || 0.1);
+  return Math.max(0.08, Math.min(0.16, raw));
+}
+
+async function sendGestureCommand(gesture) {
+  const command = GESTURE_COMMANDS[gesture];
+  if (!command) return;
+  const now = Date.now();
+  if (now - state.gesture.lastCommandAt < GESTURE_REPEAT_INTERVAL_MS) return;
+  state.gesture.lastCommandAt = now;
+  state.gesture.lastSentGesture = gesture;
+  setGestureStatus(`已识别：${command.label}`, "ready");
+  if (command.direction === "stop") {
+    state.gesture.activeDirection = "";
+    await sendStopNow(true);
+    return;
+  }
+  try {
+    state.gesture.activeDirection = command.direction;
+    await postJson("/api/control/manual", {
+      direction: command.direction,
+      speed: gestureSpeed(),
+      duration_ms: 0,
+      hold: true,
+    });
+  } catch (error) {
+    console.warn("gesture command failed", error);
+    setGestureStatus(`手势控制发送失败：${error.message || error}`, "danger");
+  }
+}
+
+function handleGestureResults(results) {
+  if (!state.gesture.enabled) return;
+  const landmarks = results.multiHandLandmarks?.[0];
+  if (!landmarks) {
+    clearGestureCanvas();
+    state.gesture.lastGesture = "none";
+    state.gesture.stableGesture = "none";
+    state.gesture.stableCount = 0;
+    state.gesture.lastSentGesture = "";
+    if (state.gesture.activeDirection) {
+      state.gesture.activeDirection = "";
+      sendStopNow(true).catch((error) => console.warn("gesture stop failed", error));
+    }
+    setGestureStatus("未检测到手掌，控制禁止", "warning");
+    return;
+  }
+  drawHandSkeleton(landmarks);
+  const gesture = classifyGesture(landmarks);
+  updateStableGesture(gesture);
+  const command = GESTURE_COMMANDS[state.gesture.stableGesture];
+  if (!command) {
+    state.gesture.lastSentGesture = "";
+    if (state.gesture.activeDirection) {
+      state.gesture.activeDirection = "";
+      sendStopNow(true).catch((error) => console.warn("gesture stop failed", error));
+    }
+    setGestureStatus("已检测到手掌，等待明确手势", "warning");
+    return;
+  }
+  sendGestureCommand(state.gesture.stableGesture);
 }
 
 async function sendManualHttp(direction) {
@@ -1393,6 +1809,23 @@ async function startVoiceListening() {
     return;
   }
   try {
+    const health = await getJson("/api/voice/health").catch((error) => ({ error: error.message || String(error) }));
+    if (health.error) {
+      state.voice.llmOutput = `语音健康检查失败：${health.error}`;
+      setVoiceStatus("error");
+      return;
+    }
+    if (!health.tencent_sdk_available) {
+      state.voice.llmOutput = "后端缺少腾讯云 ASR SDK，请先运行：pip install -r backend\\requirements.txt";
+      setVoiceStatus("error");
+      return;
+    }
+    if (!health.tencent_configured) {
+      state.voice.llmOutput = "腾讯云 ASR 密钥未配置，请检查 TENCENT_SECRET_ID / TENCENT_SECRET_KEY。";
+      setVoiceStatus("error");
+      return;
+    }
+    state.voice.wakePhrase = (health.wake_phrases || []).join(" / ") || state.voice.wakePhrase;
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -1618,6 +2051,854 @@ function writeAscii(view, offset, value) {
   }
 }
 
+const CRUISE_HEADINGS = ["north", "east", "south", "west"];
+const CRUISE_HEADING_LABELS = ["北", "东", "南", "西"];
+const CRUISE_TURN_QUARTER_PER_PULSE = 0.1;
+const CRUISE_PHYSICAL_TURN_DIRECTION = { left: "right", right: "left" };
+const CRUISE_MOVES = [
+  { dx: 0, dy: -1 },
+  { dx: 1, dy: 0 },
+  { dx: 0, dy: 1 },
+  { dx: -1, dy: 0 },
+];
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function clampCruiseCell(cell) {
+  return {
+    x: Math.max(0, Math.min(state.cruise.gridWidth - 1, Math.round(Number(cell.x || 0)))),
+    y: Math.max(0, Math.min(state.cruise.gridHeight - 1, Math.round(Number(cell.y || 0)))),
+  };
+}
+
+function cruiseHeadingIndex(heading) {
+  return ((Math.round(Number(heading) || 0) % 4) + 4) % 4;
+}
+
+function cruiseHeadingQuarter(heading) {
+  return ((Number(heading) % 4) + 4) % 4;
+}
+
+function cruiseHeadingName(heading) {
+  return CRUISE_HEADINGS[cruiseHeadingIndex(heading)] || "north";
+}
+
+function cruiseHeadingLabel(heading) {
+  const quarter = cruiseHeadingQuarter(heading);
+  const degrees = Math.round(quarter * 90);
+  return `${CRUISE_HEADING_LABELS[cruiseHeadingIndex(heading)] || "北"} ${degrees}°`;
+}
+
+function cruiseSpeed() {
+  return clampNumber($("cruiseSpeedInput")?.value, 0.08, 0.18, 0.1);
+}
+
+function cruiseForwardMs() {
+  return Math.round(clampNumber($("cruiseForwardMsInput")?.value, 120, 1200, 420));
+}
+
+function cruiseTurnMs() {
+  return Math.round(clampNumber($("cruiseTurnMsInput")?.value, 120, 1200, 360));
+}
+
+function cruiseTurnPulsesPerQuarter() {
+  return Math.round(clampNumber($("cruiseTurnPulsesInput")?.value, 1, 20, 10));
+}
+
+function cruiseTurnaroundPulses() {
+  return Math.round(clampNumber($("cruiseTurnaroundPulsesInput")?.value, 8, 36, 19));
+}
+
+function cruiseGridWidthInput() {
+  return Math.round(clampNumber($("cruiseGridWidthInput")?.value, 12, 160, 48));
+}
+
+function cruiseGridHeightInput() {
+  return Math.round(clampNumber($("cruiseGridHeightInput")?.value, 8, 160, 32));
+}
+
+function cruiseStepMeters() {
+  return clampNumber($("cruiseStepMetersInput")?.value, 0.05, 1, 0.25);
+}
+
+function cruiseDwellMs() {
+  return Math.round(clampNumber($("cruiseDwellInput")?.value, 1, 60, 5) * 1000);
+}
+
+function cruiseTurnPenalty() {
+  return clampNumber($("cruiseTurnPenaltyInput")?.value, 0, 3, 0.35);
+}
+
+function cruiseLog(message) {
+  const time = new Date().toLocaleTimeString();
+  state.cruise.log.unshift(`[${time}] ${message}`);
+  state.cruise.log = state.cruise.log.slice(0, 80);
+  const log = $("cruiseCommandLog");
+  if (log) log.textContent = state.cruise.log.join("\n") || "暂无巡航日志";
+}
+
+function setCruiseStatus(message) {
+  setText("cruiseStatusText", message);
+  setText("cruiseMapHint", message);
+}
+
+function cruiseFrame() {
+  const canvas = $("cruiseCanvas");
+  if (!canvas) return null;
+  const cell = Math.min(canvas.width / state.cruise.gridWidth, canvas.height / state.cruise.gridHeight);
+  const width = cell * state.cruise.gridWidth;
+  const height = cell * state.cruise.gridHeight;
+  return {
+    canvas,
+    cell,
+    ox: (canvas.width - width) / 2,
+    oy: (canvas.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+function cruiseCellToCanvas(cell) {
+  const frame = cruiseFrame();
+  if (!frame) return { x: 0, y: 0 };
+  return {
+    x: frame.ox + (Number(cell.x) + 0.5) * frame.cell,
+    y: frame.oy + (Number(cell.y) + 0.5) * frame.cell,
+  };
+}
+
+function cruiseCanvasToCell(event) {
+  const frame = cruiseFrame();
+  if (!frame) return null;
+  const rect = frame.canvas.getBoundingClientRect();
+  const sx = frame.canvas.width / rect.width;
+  const sy = frame.canvas.height / rect.height;
+  const x = (event.clientX - rect.left) * sx;
+  const y = (event.clientY - rect.top) * sy;
+  const gx = Math.floor((x - frame.ox) / frame.cell);
+  const gy = Math.floor((y - frame.oy) / frame.cell);
+  if (gx < 0 || gy < 0 || gx >= state.cruise.gridWidth || gy >= state.cruise.gridHeight) return null;
+  return { x: gx, y: gy };
+}
+
+function cruiseCellKey(cell) {
+  return `${cell.x},${cell.y}`;
+}
+
+function cruiseHasObstacle(cell) {
+  const key = cruiseCellKey(cell);
+  return state.cruise.obstacles.some((item) => cruiseCellKey(item) === key);
+}
+
+function cruiseWaypointAt(cell) {
+  const key = cruiseCellKey(cell);
+  return state.cruise.waypoints.find((point) => cruiseCellKey(point) === key) || null;
+}
+
+function clearCruisePlan() {
+  state.cruise.plan = null;
+  setText("cruisePlanSummary", "未规划");
+}
+
+function updateCruisePoseText() {
+  const pose = state.cruise.pose;
+  setText("cruisePoseText", `(${pose.x}, ${pose.y}) · 朝${cruiseHeadingLabel(pose.heading)}`);
+  setText("cruiseWaypointCount", String(state.cruise.waypoints.length));
+  if (state.cruise.plan?.totals) {
+    const totals = state.cruise.plan.totals;
+    const meters = Number(totals.distance_cells || 0) * cruiseStepMeters();
+    setText("cruisePlanSummary", `${totals.distance_cells} 格 ≈ ${meters.toFixed(2)}m · ${totals.turns} 次转弯 · ${totals.move_commands} 条动作`);
+  }
+}
+
+function renderCruisePage() {
+  renderCruiseCanvas();
+  renderCruiseWaypoints();
+  renderCruiseRoutes();
+  updateCruisePoseText();
+}
+
+function renderCruiseCanvas() {
+  const frame = cruiseFrame();
+  if (!frame) return;
+  const { canvas, cell, ox, oy, width, height } = frame;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#06101f";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "rgba(120, 240, 255, 0.12)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= state.cruise.gridWidth; x += 1) {
+    ctx.beginPath();
+    ctx.moveTo(ox + x * cell, oy);
+    ctx.lineTo(ox + x * cell, oy + height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= state.cruise.gridHeight; y += 1) {
+    ctx.beginPath();
+    ctx.moveTo(ox, oy + y * cell);
+    ctx.lineTo(ox + width, oy + y * cell);
+    ctx.stroke();
+  }
+  state.cruise.obstacles.forEach((item) => {
+    ctx.fillStyle = "rgba(255, 95, 115, 0.45)";
+    ctx.fillRect(ox + item.x * cell + 2, oy + item.y * cell + 2, cell - 4, cell - 4);
+  });
+  drawCruiseRoute(ctx);
+  state.cruise.waypoints.forEach((point, index) => drawCruiseWaypoint(ctx, point, index));
+  drawCruisePose(ctx);
+}
+
+function drawCruiseRoute(ctx) {
+  const route = state.cruise.plan?.route || [];
+  if (route.length < 2) return;
+  ctx.save();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(38, 244, 255, 0.82)";
+  ctx.setLineDash([10, 7]);
+  ctx.beginPath();
+  route.forEach((cell, index) => {
+    const point = cruiseCellToCanvas(cell);
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCruiseWaypoint(ctx, point, index) {
+  const canvasPoint = cruiseCellToCanvas(point);
+  const selected = point.id === state.cruise.selectedWaypointId;
+  ctx.save();
+  ctx.fillStyle = point.color || state.cruise.colors[index % state.cruise.colors.length];
+  ctx.strokeStyle = selected ? "#ffffff" : "rgba(255, 255, 255, 0.55)";
+  ctx.lineWidth = selected ? 4 : 2;
+  ctx.beginPath();
+  ctx.arc(canvasPoint.x, canvasPoint.y, selected ? 13 : 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#04101a";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(index + 1), canvasPoint.x, canvasPoint.y);
+  ctx.restore();
+}
+
+function drawCruisePose(ctx) {
+  const pose = state.cruise.pose;
+  const point = cruiseCellToCanvas(pose);
+  const angle = cruiseHeadingQuarter(pose.heading) * Math.PI / 2;
+  const move = { dx: Math.sin(angle), dy: -Math.cos(angle) };
+  ctx.save();
+  ctx.fillStyle = "#7dff9b";
+  ctx.strokeStyle = "rgba(4, 16, 26, 0.9)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = "#7dff9b";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(point.x, point.y);
+  ctx.lineTo(point.x + move.dx * 20, point.y + move.dy * 20);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function renderCruiseWaypoints() {
+  const list = $("cruiseWaypointList");
+  if (!list) return;
+  if (!state.cruise.waypoints.length) {
+    list.innerHTML = `<div class="goal-empty">还没有途经点</div>`;
+    return;
+  }
+  list.innerHTML = state.cruise.waypoints.map((point, index) => `
+    <button class="cruise-point-item ${point.id === state.cruise.selectedWaypointId ? "active" : ""}" data-cruise-point="${escapeHtml(point.id)}" type="button">
+      <span class="cruise-point-swatch" style="background:${escapeHtml(point.color)}"></span>
+      <span><strong>${index + 1}. ${escapeHtml(point.name)}</strong><small>(${point.x}, ${point.y}) · 朝${cruiseHeadingLabel(point.heading)}</small></span>
+      <small>${point.id === state.cruise.selectedWaypointId ? "已选中" : "选择"}</small>
+    </button>
+  `).join("");
+  list.querySelectorAll("[data-cruise-point]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectCruiseWaypoint(button.dataset.cruisePoint || "");
+    });
+  });
+}
+
+function renderCruiseRoutes() {
+  const select = $("cruiseRouteSelect");
+  if (!select) return;
+  const current = select.value;
+  if (!state.cruise.savedRoutes.length) {
+    select.innerHTML = `<option value="">暂无保存路线</option>`;
+    return;
+  }
+  select.innerHTML = state.cruise.savedRoutes.map((route) => (
+    `<option value="${escapeHtml(route.id)}">${escapeHtml(route.name || route.id)}</option>`
+  )).join("");
+  if (state.cruise.savedRoutes.some((route) => route.id === current)) {
+    select.value = current;
+  }
+}
+
+function selectCruiseWaypoint(id) {
+  state.cruise.selectedWaypointId = id;
+  const point = state.cruise.waypoints.find((item) => item.id === id);
+  if (point) {
+    const input = $("cruiseWaypointNameInput");
+    if (input) input.value = point.name || "";
+    setCruiseStatus(`已选择 ${point.name}，点击网格可调整它的位置。`);
+  }
+  renderCruisePage();
+}
+
+function selectedCruiseWaypointIndex() {
+  return state.cruise.waypoints.findIndex((point) => point.id === state.cruise.selectedWaypointId);
+}
+
+function saveCruiseWaypoint() {
+  const pose = state.cruise.pose;
+  if (cruiseHasObstacle(pose)) {
+    setCruiseStatus("当前位置是障碍格，不能保存途经点。");
+    return;
+  }
+  const existing = cruiseWaypointAt(pose);
+  if (existing) {
+    state.cruise.selectedWaypointId = existing.id;
+    setCruiseStatus(`${existing.name} 已在当前位置。`);
+    renderCruisePage();
+    return;
+  }
+  const index = state.cruise.nextWaypointNumber++;
+  const point = {
+    id: `wp-${Date.now()}-${index}`,
+    name: `途经点 ${index}`,
+    x: pose.x,
+    y: pose.y,
+    heading: pose.heading,
+    color: state.cruise.colors[state.cruise.waypoints.length % state.cruise.colors.length],
+  };
+  state.cruise.waypoints.push(point);
+  state.cruise.selectedWaypointId = point.id;
+  clearCruisePlan();
+  setCruiseStatus(`已保存 ${point.name}。`);
+  renderCruisePage();
+}
+
+function moveCruiseWaypoint(delta) {
+  const index = selectedCruiseWaypointIndex();
+  if (index < 0) return;
+  const next = index + delta;
+  if (next < 0 || next >= state.cruise.waypoints.length) return;
+  const [point] = state.cruise.waypoints.splice(index, 1);
+  state.cruise.waypoints.splice(next, 0, point);
+  clearCruisePlan();
+  setCruiseStatus(`已调整 ${point.name} 的巡航顺序。`);
+  renderCruisePage();
+}
+
+function deleteCruiseWaypoint() {
+  const index = selectedCruiseWaypointIndex();
+  if (index < 0) return;
+  const [point] = state.cruise.waypoints.splice(index, 1);
+  const next = state.cruise.waypoints[Math.min(index, state.cruise.waypoints.length - 1)];
+  state.cruise.selectedWaypointId = next?.id || "";
+  clearCruisePlan();
+  setCruiseStatus(`已删除 ${point.name}。`);
+  renderCruisePage();
+}
+
+function clearCruiseWaypoints() {
+  state.cruise.waypoints = [];
+  state.cruise.selectedWaypointId = "";
+  state.cruise.nextWaypointNumber = 1;
+  clearCruisePlan();
+  setCruiseStatus("途经点已清空。");
+  renderCruisePage();
+}
+
+function renameSelectedCruiseWaypoint() {
+  const index = selectedCruiseWaypointIndex();
+  if (index < 0) {
+    setCruiseStatus("请先选择一个途经点。");
+    return;
+  }
+  const input = $("cruiseWaypointNameInput");
+  const name = (input?.value || "").trim();
+  if (!name) {
+    setCruiseStatus("请输入途经点名称。");
+    return;
+  }
+  state.cruise.waypoints[index].name = name.slice(0, 24);
+  clearCruisePlan();
+  setCruiseStatus(`已修改为 ${state.cruise.waypoints[index].name}。`);
+  renderCruisePage();
+}
+
+function applyCruiseGridSize() {
+  state.cruise.gridWidth = cruiseGridWidthInput();
+  state.cruise.gridHeight = cruiseGridHeightInput();
+  state.cruise.pose = clampCruiseCell(state.cruise.pose);
+  state.cruise.waypoints = state.cruise.waypoints.map((point) => ({
+    ...point,
+    ...clampCruiseCell(point),
+  }));
+  const seen = new Set();
+  state.cruise.obstacles = state.cruise.obstacles
+    .map(clampCruiseCell)
+    .filter((item) => {
+      const key = cruiseCellKey(item);
+      if (seen.has(key) || cruiseWaypointAt(item)) return false;
+      seen.add(key);
+      return true;
+    });
+  clearCruisePlan();
+  setCruiseStatus(`巡航网格已调整为 ${state.cruise.gridWidth} × ${state.cruise.gridHeight}。`);
+  renderCruisePage();
+}
+
+function handleCruiseCanvasClick(event) {
+  const cell = cruiseCanvasToCell(event);
+  if (!cell) return;
+  const key = cruiseCellKey(cell);
+  if (state.cruise.selectedMode === "obstacle") {
+    const index = state.cruise.obstacles.findIndex((item) => cruiseCellKey(item) === key);
+    if (index >= 0) state.cruise.obstacles.splice(index, 1);
+    else if (!cruiseWaypointAt(cell)) state.cruise.obstacles.push(cell);
+    clearCruisePlan();
+    renderCruisePage();
+    return;
+  }
+  const selected = state.cruise.waypoints.find((point) => point.id === state.cruise.selectedWaypointId);
+  if (selected && !cruiseHasObstacle(cell)) {
+    const occupied = cruiseWaypointAt(cell);
+    if (occupied && occupied.id !== selected.id) {
+      setCruiseStatus("该格已有途经点。");
+      return;
+    }
+    selected.x = cell.x;
+    selected.y = cell.y;
+    clearCruisePlan();
+    setCruiseStatus(`已移动 ${selected.name}。`);
+  } else if (!cruiseHasObstacle(cell)) {
+    state.cruise.pose = { ...state.cruise.pose, ...cell };
+    setCruiseStatus("已移动当前位置估计。");
+  }
+  renderCruisePage();
+}
+
+function setCruiseEditMode(mode) {
+  state.cruise.selectedMode = mode === "obstacle" ? "obstacle" : "select";
+  $("cruiseSelectBtn")?.classList.toggle("active", state.cruise.selectedMode === "select");
+  $("cruiseObstacleBtn")?.classList.toggle("active", state.cruise.selectedMode === "obstacle");
+  setCruiseStatus(state.cruise.selectedMode === "obstacle" ? "点击网格可添加或取消障碍。" : "点击途经点后，可在网格上移动它。");
+}
+
+function resetCruisePose() {
+  state.cruise.pose = { x: 3, y: state.cruise.gridHeight - 4, heading: 0 };
+  setCruiseStatus("当前位置估计已归零。");
+  renderCruisePage();
+}
+
+function updateCruisePoseByDirection(direction) {
+  const pose = state.cruise.pose;
+  if (direction === "left") {
+    pose.heading = cruiseHeadingQuarter(pose.heading - CRUISE_TURN_QUARTER_PER_PULSE);
+  } else if (direction === "right") {
+    pose.heading = cruiseHeadingQuarter(pose.heading + CRUISE_TURN_QUARTER_PER_PULSE);
+  } else if (direction === "forward" || direction === "backward") {
+    const move = CRUISE_MOVES[cruiseHeadingIndex(pose.heading)] || CRUISE_MOVES[0];
+    const sign = direction === "forward" ? 1 : -1;
+    const next = clampCruiseCell({ x: pose.x + move.dx * sign, y: pose.y + move.dy * sign });
+    if (!cruiseHasObstacle(next)) {
+      pose.x = next.x;
+      pose.y = next.y;
+    }
+  }
+}
+
+async function sendCruiseManual(direction) {
+  if (!direction) return;
+  if (direction === "stop") {
+    await sendStopNow(true);
+    cruiseLog("已发送停止");
+    return;
+  }
+  const duration = direction === "forward" || direction === "backward" ? cruiseForwardMs() : cruiseTurnMs();
+  const physicalDirection = CRUISE_PHYSICAL_TURN_DIRECTION[direction] || direction;
+  await postJson("/api/control/manual", {
+    direction: physicalDirection,
+    speed: cruiseSpeed(),
+    duration_ms: duration,
+  });
+  updateCruisePoseByDirection(direction);
+  cruiseLog(`遥控 ${direction}${physicalDirection !== direction ? ` -> 实车${physicalDirection}` : ""} · ${duration}ms`);
+  if (!state.cruise.running) clearCruisePlan();
+  renderCruisePage();
+}
+
+async function sendCruiseContinuousTurn(direction, totalMs) {
+  const physicalDirection = CRUISE_PHYSICAL_TURN_DIRECTION[direction] || direction;
+  const startedAt = Date.now();
+  cruiseLog(`连续${direction === "left" ? "左" : "右"}掉头 · ${Math.round(totalMs)}ms`);
+  while (Date.now() - startedAt < totalMs) {
+    await waitCruiseReady();
+    await postJson("/api/control/manual", {
+      direction: physicalDirection,
+      speed: cruiseSpeed(),
+      duration_ms: 0,
+      hold: true,
+    });
+    await waitCruise(220);
+  }
+  await sendStopNow(true);
+}
+
+function cruisePlanPayload() {
+  return {
+    grid: {
+      width: state.cruise.gridWidth,
+      height: state.cruise.gridHeight,
+    },
+    waypoints: state.cruise.waypoints.map((point, index) => ({
+      id: point.id,
+      name: point.name || `途经点 ${index + 1}`,
+      x: point.x,
+      y: point.y,
+      heading: cruiseHeadingName(point.heading),
+      color: point.color,
+    })),
+    obstacles: state.cruise.obstacles,
+    start_heading: cruiseHeadingName(state.cruise.waypoints[0]?.heading ?? state.cruise.pose.heading),
+    route_mode: "out_and_back",
+    turn_penalty: cruiseTurnPenalty(),
+  };
+}
+
+function cruiseRoutePayload() {
+  return {
+    grid: { width: state.cruise.gridWidth, height: state.cruise.gridHeight },
+    pose: state.cruise.pose,
+    waypoints: state.cruise.waypoints,
+    obstacles: state.cruise.obstacles,
+    settings: {
+      speed: cruiseSpeed(),
+      forward_ms: cruiseForwardMs(),
+      turn_ms: cruiseTurnMs(),
+      turn_pulses_per_90: cruiseTurnPulsesPerQuarter(),
+      turnaround_pulses: cruiseTurnaroundPulses(),
+      step_meters: cruiseStepMeters(),
+      dwell_seconds: Math.round(cruiseDwellMs() / 1000),
+      turn_penalty: cruiseTurnPenalty(),
+      mode: $("cruiseModeSelect")?.value || "once",
+      repeat_count: Math.round(clampNumber($("cruiseRepeatInput")?.value, 1, 20, 1)),
+    },
+    plan: state.cruise.plan,
+  };
+}
+
+async function loadCruiseRoutes() {
+  try {
+    const data = await getJson("/api/cruise/routes");
+    state.cruise.savedRoutes = data.routes || [];
+    renderCruiseRoutes();
+  } catch (error) {
+    console.warn("load cruise routes failed", error);
+  }
+}
+
+async function saveCruiseRoute() {
+  if (state.cruise.waypoints.length < 3) {
+    setCruiseStatus("请先保存至少 3 个途经点，再保存路线。");
+    return;
+  }
+  const name = ($("cruiseRouteNameInput")?.value || "").trim() || "路线1";
+  const plan = state.cruise.plan || await planCruiseRoute();
+  if (!plan?.ok) return;
+  const existingId = $("cruiseRouteSelect")?.value || "";
+  const result = await postJson("/api/cruise/routes", {
+    id: existingId || undefined,
+    name,
+    route: { ...cruiseRoutePayload(), plan },
+  });
+  const saved = result.route;
+  const index = state.cruise.savedRoutes.findIndex((route) => route.id === saved.id);
+  if (index >= 0) state.cruise.savedRoutes.splice(index, 1, saved);
+  else state.cruise.savedRoutes.unshift(saved);
+  renderCruiseRoutes();
+  const select = $("cruiseRouteSelect");
+  if (select) select.value = saved.id;
+  setCruiseStatus(`已保存路线：${saved.name}。`);
+  cruiseLog(`路线已保存：${saved.name}`);
+}
+
+function applyCruiseRoute(route) {
+  const data = route?.route || {};
+  const grid = data.grid || {};
+  state.cruise.gridWidth = Math.round(clampNumber(grid.width, 12, 160, 48));
+  state.cruise.gridHeight = Math.round(clampNumber(grid.height, 8, 160, 32));
+  const widthInput = $("cruiseGridWidthInput");
+  const heightInput = $("cruiseGridHeightInput");
+  if (widthInput) widthInput.value = String(state.cruise.gridWidth);
+  if (heightInput) heightInput.value = String(state.cruise.gridHeight);
+  state.cruise.pose = clampCruiseCell(data.pose || { x: 3, y: state.cruise.gridHeight - 4, heading: 0 });
+  state.cruise.waypoints = Array.isArray(data.waypoints) ? data.waypoints.map((point, index) => ({
+    ...point,
+    ...clampCruiseCell(point),
+    id: point.id || `wp-${Date.now()}-${index}`,
+    name: point.name || `途经点 ${index + 1}`,
+    color: point.color || state.cruise.colors[index % state.cruise.colors.length],
+    heading: Number(point.heading || 0),
+  })) : [];
+  state.cruise.obstacles = Array.isArray(data.obstacles) ? data.obstacles.map(clampCruiseCell) : [];
+  state.cruise.selectedWaypointId = state.cruise.waypoints[0]?.id || "";
+  state.cruise.nextWaypointNumber = state.cruise.waypoints.length + 1;
+  const settings = data.settings || {};
+  const setValue = (id, value) => {
+    const node = $(id);
+    if (node && value !== undefined && value !== null) node.value = String(value);
+  };
+  setValue("cruiseSpeedInput", settings.speed);
+  setValue("cruiseForwardMsInput", settings.forward_ms);
+  setValue("cruiseTurnMsInput", settings.turn_ms);
+  setValue("cruiseTurnPulsesInput", settings.turn_pulses_per_90);
+  setValue("cruiseTurnaroundPulsesInput", settings.turnaround_pulses);
+  setValue("cruiseStepMetersInput", settings.step_meters);
+  setValue("cruiseDwellInput", settings.dwell_seconds);
+  setValue("cruiseTurnPenaltyInput", settings.turn_penalty);
+  setValue("cruiseRepeatInput", settings.repeat_count);
+  setValue("cruiseModeSelect", settings.mode);
+  setValue("cruiseRouteNameInput", route.name || "");
+  state.cruise.plan = data.plan || null;
+  setCruiseStatus(`已加载路线：${route.name || route.id}。`);
+  renderCruisePage();
+}
+
+function loadSelectedCruiseRoute() {
+  const id = $("cruiseRouteSelect")?.value || "";
+  const route = state.cruise.savedRoutes.find((item) => item.id === id);
+  if (!route) {
+    setCruiseStatus("请选择一条已保存路线。");
+    return;
+  }
+  applyCruiseRoute(route);
+}
+
+async function planCruiseRoute() {
+  if (state.cruise.waypoints.length < 3) {
+    setCruiseStatus("请先保存至少 3 个途经点。");
+    return null;
+  }
+  setCruiseStatus("正在规划 A* 巡航路线...");
+  const plan = await postJson("/api/cruise/plan", cruisePlanPayload());
+  state.cruise.plan = plan;
+  const first = state.cruise.waypoints[0];
+  state.cruise.pose = { x: first.x, y: first.y, heading: first.heading ?? state.cruise.pose.heading };
+  const totals = plan.totals || {};
+  const meters = Number(totals.distance_cells || 0) * cruiseStepMeters();
+  cruiseLog(`规划完成：${totals.distance_cells || 0} 格，约 ${meters.toFixed(2)}m，${totals.turns || 0} 次转弯，${totals.move_commands || 0} 条动作`);
+  setCruiseStatus("路线已规划。开始前请确认小车已经回到第一个途经点。");
+  renderCruisePage();
+  return plan;
+}
+
+function cruiseRepeatTarget() {
+  const mode = $("cruiseModeSelect")?.value || "once";
+  if (mode === "loop") return Infinity;
+  if (mode === "repeat") return Math.round(clampNumber($("cruiseRepeatInput")?.value, 1, 20, 1));
+  return 1;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitCruise(ms) {
+  let remaining = ms;
+  let last = Date.now();
+  while (remaining > 0) {
+    if (state.cruise.stopRequested) throw new Error("cruise stopped");
+    if (!state.cruise.paused) {
+      const now = Date.now();
+      remaining -= now - last;
+      last = now;
+      await sleep(120);
+    } else {
+      last = Date.now();
+      await sleep(180);
+    }
+  }
+}
+
+async function waitCruiseReady() {
+  while (state.cruise.paused) {
+    if (state.cruise.stopRequested) throw new Error("cruise stopped");
+    await sleep(180);
+  }
+  if (state.cruise.stopRequested) throw new Error("cruise stopped");
+}
+
+async function executeCruiseCommand(command) {
+  await waitCruiseReady();
+  if (command.type === "move") {
+    const repeats = command.direction === "left" || command.direction === "right"
+      ? cruiseTurnPulsesPerQuarter()
+      : 1;
+    for (let index = 0; index < repeats; index += 1) {
+      await waitCruiseReady();
+      await sendCruiseManual(command.direction);
+      if (repeats > 1) await waitCruise(80);
+    }
+    return;
+  }
+  if (command.type === "turnaround") {
+    const direction = command.direction || "left";
+    await sendCruiseContinuousTurn(direction, cruiseTurnMs() * cruiseTurnaroundPulses());
+    state.cruise.pose.heading = cruiseHeadingQuarter(state.cruise.pose.heading + 2);
+    cruiseLog("掉头完成");
+    renderCruisePage();
+    return;
+  }
+  if (command.type === "arrive") {
+    cruiseLog(`到达 ${command.waypoint_name || command.waypoint_id}`);
+    await sendAuxControl("buzzer", { duration_ms: 180 });
+    await waitCruise(cruiseDwellMs());
+  }
+}
+
+async function startCruiseExecution() {
+  if (state.cruise.running) {
+    setCruiseStatus("巡航正在执行中。");
+    return;
+  }
+  const plan = state.cruise.plan || await planCruiseRoute();
+  if (!plan?.commands?.length) return;
+  const first = state.cruise.waypoints[0];
+  state.cruise.pose = { x: first.x, y: first.y, heading: first.heading ?? state.cruise.pose.heading };
+  state.cruise.running = true;
+  state.cruise.paused = false;
+  state.cruise.stopRequested = false;
+  const targetRepeats = cruiseRepeatTarget();
+  cruiseLog("巡航开始");
+  setCruiseStatus("巡航执行中。");
+  state.cruise.executionPromise = (async () => {
+    let round = 0;
+    try {
+      while (!state.cruise.stopRequested && round < targetRepeats) {
+        round += 1;
+        cruiseLog(`第 ${round} 轮巡航`);
+        for (const command of plan.commands) {
+          await executeCruiseCommand(command);
+        }
+      }
+      if (!state.cruise.stopRequested) {
+        setCruiseStatus("巡航完成。");
+        cruiseLog("巡航完成");
+      }
+    } catch (error) {
+      if (!state.cruise.stopRequested) {
+        console.warn("cruise execution failed", error);
+        setCruiseStatus(`巡航中断：${error.message || error}`);
+        cruiseLog(`巡航中断：${error.message || error}`);
+      }
+    } finally {
+      state.cruise.running = false;
+      state.cruise.paused = false;
+      state.cruise.stopRequested = false;
+      await sendStopNow(true);
+      renderCruisePage();
+    }
+  })();
+}
+
+function toggleCruisePause() {
+  if (!state.cruise.running) return;
+  state.cruise.paused = !state.cruise.paused;
+  setCruiseStatus(state.cruise.paused ? "巡航已暂停。" : "巡航继续执行。");
+  cruiseLog(state.cruise.paused ? "巡航暂停" : "巡航继续");
+  if (state.cruise.paused) sendStopNow(true);
+}
+
+async function stopCruiseExecution() {
+  state.cruise.stopRequested = true;
+  state.cruise.paused = false;
+  await sendStopNow(true);
+  state.cruise.running = false;
+  setCruiseStatus("巡航已停止。");
+  cruiseLog("巡航停止");
+  renderCruisePage();
+}
+
+function bindCruiseEvents() {
+  $("cruiseCanvas")?.addEventListener("click", handleCruiseCanvasClick);
+  $("cruiseSelectBtn")?.addEventListener("click", () => setCruiseEditMode("select"));
+  $("cruiseObstacleBtn")?.addEventListener("click", () => setCruiseEditMode("obstacle"));
+  $("cruiseClearObstaclesBtn")?.addEventListener("click", () => {
+    state.cruise.obstacles = [];
+    clearCruisePlan();
+    setCruiseStatus("障碍已清空。");
+    renderCruisePage();
+  });
+  $("cruiseResetPoseBtn")?.addEventListener("click", resetCruisePose);
+  $("cruiseSaveWaypointBtn")?.addEventListener("click", saveCruiseWaypoint);
+  $("cruiseRenameWaypointBtn")?.addEventListener("click", renameSelectedCruiseWaypoint);
+  $("cruiseMovePointUpBtn")?.addEventListener("click", () => moveCruiseWaypoint(-1));
+  $("cruiseMovePointDownBtn")?.addEventListener("click", () => moveCruiseWaypoint(1));
+  $("cruiseDeletePointBtn")?.addEventListener("click", deleteCruiseWaypoint);
+  $("cruiseClearPointsBtn")?.addEventListener("click", clearCruiseWaypoints);
+  $("cruiseSaveRouteBtn")?.addEventListener("click", () => {
+    saveCruiseRoute().catch((error) => {
+      console.warn("save cruise route failed", error);
+      setCruiseStatus(`保存路线失败：${error.message || error}`);
+    });
+  });
+  $("cruiseLoadRouteBtn")?.addEventListener("click", loadSelectedCruiseRoute);
+  $("cruisePlanBtn")?.addEventListener("click", () => {
+    planCruiseRoute().catch((error) => {
+      console.warn("cruise plan failed", error);
+      setCruiseStatus(`规划失败：${error.message || error}`);
+    });
+  });
+  $("cruiseStartBtn")?.addEventListener("click", () => {
+    startCruiseExecution().catch((error) => {
+      console.warn("cruise start failed", error);
+      setCruiseStatus(`巡航启动失败：${error.message || error}`);
+    });
+  });
+  $("cruisePauseBtn")?.addEventListener("click", toggleCruisePause);
+  $("cruiseStopBtn")?.addEventListener("click", () => {
+    stopCruiseExecution().catch((error) => console.warn("cruise stop failed", error));
+  });
+  document.querySelectorAll(".cruise-dpad button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      sendCruiseManual(button.dataset.dir).catch((error) => {
+        console.warn("cruise manual failed", error);
+        setCruiseStatus(`遥控失败：${error.message || error}`);
+      });
+    });
+  });
+  ["cruiseTurnPenaltyInput", "cruiseStepMetersInput", "cruiseTurnPulsesInput", "cruiseTurnaroundPulsesInput"].forEach((id) => {
+    $(id)?.addEventListener("change", () => {
+      clearCruisePlan();
+      renderCruisePage();
+    });
+  });
+  ["cruiseGridWidthInput", "cruiseGridHeightInput"].forEach((id) => {
+    $(id)?.addEventListener("change", applyCruiseGridSize);
+  });
+  setCruiseEditMode("select");
+  loadCruiseRoutes().catch((error) => console.warn("load cruise routes failed", error));
+  renderCruisePage();
+}
+
 function speakLocalCue(text) {
   try {
     if (!("speechSynthesis" in window)) return;
@@ -1633,6 +2914,10 @@ function speakLocalCue(text) {
 
 async function playBuzzerCue() {
   await sendAuxControl("buzzer", { duration_ms: 260 });
+}
+
+async function playVoiceCue() {
+  await sendAuxControl("voice", { text: "主人，我在", volume_percent: 85 });
 }
 
 function bindEvents() {
@@ -1651,6 +2936,7 @@ function bindEvents() {
   });
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
   $("buzzerBtn")?.addEventListener("click", playBuzzerCue);
+  $("voicePlayBtn")?.addEventListener("click", playVoiceCue);
   $("followLineBtn")?.addEventListener("click", toggleFollowLine);
   $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
   $("cameraNextBtn")?.addEventListener("click", () => {
@@ -1661,6 +2947,9 @@ function bindEvents() {
   $("cameraSelect")?.addEventListener("change", () => {
     state.camera.attempts = 0;
     startCameraAt(Number($("cameraSelect")?.value || 0));
+  });
+  $("gestureToggleBtn")?.addEventListener("click", () => {
+    toggleGestureControl();
   });
   $("speedRange")?.addEventListener("input", updateSpeedDisplay);
   $("voiceToggleBtn")?.addEventListener("click", () => {
@@ -1674,6 +2963,7 @@ function bindEvents() {
     });
   });
   if (page === "navigation") bindSlamEvents();
+  if (page === "cruise") bindCruiseEvents();
   window.addEventListener("blur", () => sendStopNow());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) sendStopNow();
@@ -1693,6 +2983,9 @@ async function initPage() {
     await loadSlamMaps();
     await refreshSlamStatus();
     await refreshSlamLogs();
+  }
+  if (page === "cruise") {
+    renderCruisePage();
   }
   connect();
 }

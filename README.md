@@ -148,6 +148,7 @@ python -X utf8 scripts\db_check.py
 | 总览 | `http://127.0.0.1:8000/dashboard` |
 | 遥控 | `http://127.0.0.1:8000/control` |
 | 导航 | `http://127.0.0.1:8000/navigation` |
+| 巡航 | `http://127.0.0.1:8000/cruise` |
 | 视觉 | `http://127.0.0.1:8000/vision` |
 | 告警 | `http://127.0.0.1:8000/alarms` |
 | 报告 | `http://127.0.0.1:8000/reports` |
@@ -156,9 +157,11 @@ python -X utf8 scripts\db_check.py
 
 - Web 控制台首页、连接状态、手动遥控、急停、速度档位。
 - 房间点位列表、单点导航、巡逻路线、导航状态和模拟地图。
+- 定点巡航页面：遥控记录 3 个以上途经点，支持删除、调整顺序、障碍编辑、A* 少转弯规划、一次/指定次数/循环巡航，到点蜂鸣并按设定秒数停留。
 - 传感器面板：温度、湿度、光照、可燃气体、PM2.5。
 - 告警列表、告警确认、通信断开/传感器超阈值告警。
 - 视觉事件模拟：人员、宠物、门窗等检测结果。
+- 视觉页本地 MediaPipe 手势识别：叠加手部骨架，支持握拳停止、1 后退、五指前进、2 左转、3 右转。
 - 报告记录：导航到达、巡逻完成、告警事件。
 - 接口文档、测试清单和启动脚本。
 - 可选腾讯云 MySQL 持久化：告警、报告、视觉事件、传感器采样。
@@ -188,6 +191,7 @@ git@github.com:HF-youngior/icar.git
 | `docs/start-project.md` | 真车实测启动流程：6001 控制桥接、8080 摄像头、8765 YOLO、8000 Web 后端 |
 | `docs/car-connection.md` | 小车连接、NoMachine、SSH、热点、有线和 VMware 测试说明 |
 | `docs/database.md` | 腾讯云 MySQL 环境变量、建表和连通性检查 |
+| `docs/cloud-ci.md` | 腾讯云数据库、腾讯云语音识别、大模型和 GitHub Actions CI/CD 说明 |
 | `docs/interface.md` | WebSocket 和 HTTP 接口 |
 | `docs/test-plan.md` | 功能测试和真车联调测试清单 |
 | `vision/README.md` | YOLOv5 训练、推理和 Jetson 部署说明 |

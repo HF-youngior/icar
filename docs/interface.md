@@ -90,6 +90,6 @@ ws://127.0.0.1:8000/ws
 | POST | `/api/navigation/goal` | 单点导航 |
 | POST | `/api/navigation/patrol` | 巡逻路线 |
 | POST | `/api/navigation/stop` | 停止导航 |
+| POST | `/api/cruise/plan` | 定点巡航 A* 路线规划 |
 | POST | `/api/vision/detect` | 触发一次视觉检测 |
 | POST | `/api/alarms/{alarm_id}/confirm` | 确认告警 |
-

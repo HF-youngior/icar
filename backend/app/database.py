@@ -81,6 +81,15 @@ class DatabaseStore:
               INDEX idx_sensor_time(sensor_name, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """,
+            """
+            CREATE TABLE IF NOT EXISTS robot_cruise_route (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              route_id VARCHAR(64) NOT NULL UNIQUE,
+              name VARCHAR(128) NOT NULL,
+              payload JSON NOT NULL,
+              updated_at DATETIME NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """,
         ]
         try:
             with self._connect() as conn:
@@ -194,6 +203,43 @@ class DatabaseStore:
             sample.get("updated_at"),
         ))
 
+    def save_cruise_route(self, route: dict[str, Any]) -> None:
+        if not self.config.enabled:
+            return
+        sql = """
+            INSERT INTO robot_cruise_route (route_id, name, payload, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), payload=VALUES(payload), updated_at=VALUES(updated_at)
+        """
+        self._execute(sql, (
+            route.get("id"),
+            route.get("name"),
+            json.dumps(route, ensure_ascii=False),
+            route.get("updated_at"),
+        ))
+
+    def list_cruise_routes(self) -> list[dict[str, Any]]:
+        if not self.config.enabled:
+            return []
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT payload FROM robot_cruise_route ORDER BY updated_at DESC")
+                    rows = cursor.fetchall()
+            self.available = True
+            self.last_error = None
+            routes: list[dict[str, Any]] = []
+            for row in rows:
+                raw = row[0] if isinstance(row, tuple) else row.get("payload")
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict):
+                    routes.append(data)
+            return routes
+        except Exception as exc:
+            self.available = False
+            self.last_error = str(exc)
+            return []
+
     def _execute(self, sql: str, params: tuple[Any, ...]) -> None:
         try:
             with self._connect() as conn:
@@ -227,3 +273,9 @@ class NullDatabaseStore(DatabaseStore):
 
     def save_sensor_sample(self, sample: dict[str, Any]) -> None:
         return None
+
+    def save_cruise_route(self, route: dict[str, Any]) -> None:
+        return None
+
+    def list_cruise_routes(self) -> list[dict[str, Any]]:
+        return []
