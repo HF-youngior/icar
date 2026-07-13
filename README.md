@@ -186,6 +186,7 @@ git@github.com:HF-youngior/icar.git
 
 | 文档 | 说明 |
 | --- | --- |
+| `docs/start-project.md` | 真车实测启动流程：6001 控制桥接、8080 摄像头、8765 YOLO、8000 Web 后端 |
 | `docs/car-connection.md` | 小车连接、NoMachine、SSH、热点、有线和 VMware 测试说明 |
 | `docs/database.md` | 腾讯云 MySQL 环境变量、建表和连通性检查 |
 | `docs/cloud-ci.md` | 腾讯云数据库、腾讯云语音识别、大模型和 GitHub Actions CI/CD 说明 |

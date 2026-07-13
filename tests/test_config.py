@@ -20,6 +20,7 @@ class ConfigTest(unittest.TestCase):
                 json.dumps({
                     "server": {"host": "127.0.0.1", "port": 9000},
                     "car": {"adapter": "tcp", "host": "192.168.1.20", "port": 6000},
+                    "vision": {"mode": "remote", "service_port": 9900},
                     "sensor_tick_sec": 2.5,
                 }),
                 encoding="utf-8",
@@ -33,6 +34,7 @@ class ConfigTest(unittest.TestCase):
                 "ICAR_DB_USER": "icar",
                 "ICAR_DB_PASSWORD": "secret",
                 "ICAR_DB_NAME": "robot",
+                "ICAR_VISION_HOST": "192.168.1.30",
             }
             with patch.dict(os.environ, env, clear=True):
                 config = load_config()
@@ -42,6 +44,9 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.car.adapter, "ros2_cli")
         self.assertEqual(config.car.host, "192.168.1.20")
         self.assertEqual(config.sensor_tick_sec, 2.5)
+        self.assertEqual(config.vision.mode, "remote")
+        self.assertEqual(config.vision.service_host, "192.168.1.30")
+        self.assertEqual(config.vision.service_port, 9900)
         self.assertTrue(config.database.enabled)
         self.assertEqual(config.database.host, "db.example.com")
         self.assertEqual(config.database.port, 3307)

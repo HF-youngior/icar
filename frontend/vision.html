@@ -43,7 +43,15 @@
               <canvas id="gestureCanvas"></canvas>
               <div class="gesture-lock" id="gestureStatus">手势控制未开启</div>
             </div>
-            <button class="neon-btn primary wide" id="detectBtn">检测一次</button>
+            <div class="camera-toolbar">
+              <select id="visionTargetSelect" multiple size="4" aria-label="检测目标选择"></select>
+              <button class="neon-btn primary" id="detectBtn">检测一次</button>
+              <button class="neon-btn primary" id="visionStartBtn">开始检测</button>
+              <button class="neon-btn ghost" id="visionStopBtn">停止检测</button>
+            </div>
+            <div class="panel-title compact-title"><h2>检测结果图</h2><p id="detectionImageStatus">等待检测</p></div>
+            <div class="detection-frame"><img id="detectionImage" alt="YOLO 检测结果图" src="/assets/sample-detection.svg" /></div>
+            <p class="subhead" id="visionModeHint">检测任务默认从原生视频流取图，不占用摄像头设备。</p>
           </article>
           <article class="panel glow-panel">
             <div class="panel-title"><h2>检测事件</h2><p>类别、置信度、时间戳</p></div>
@@ -52,7 +60,6 @@
         </section>
       </main>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="/assets/js/app.js"></script>
   </body>
 </html>

@@ -95,7 +95,6 @@ async def on_startup() -> None:
     database.init_schema()
     navigation.start_background()
     sensors.start_background()
-    vision.start_background()
     try:
         await adapter.connect()
         await state.update_robot(connected=True, adapter=adapter.name, mode="standby")
@@ -604,8 +603,35 @@ async def slam_stop() -> dict[str, Any]:
 
 
 @app.post("/api/vision/detect")
-async def vision_detect() -> dict[str, Any]:
-    return await vision.detect_once()
+async def vision_detect(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return await vision.detect_once((payload or {}).get("targets"))
+
+
+@app.get("/api/vision/status")
+async def vision_status() -> dict[str, Any]:
+    status = vision.status()
+    return {
+        "ok": True,
+        "running": status["running"],
+        "targets": status["targets"],
+        "source": status["source"],
+        "stream_url": status["stream_url"],
+        "backend_mode": status["backend_mode"],
+        "service_url": status["service_url"],
+        "options": vision.available_targets(),
+    }
+
+
+@app.post("/api/vision/start")
+async def vision_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    status = await vision.start_detection((payload or {}).get("targets"))
+    return {"ok": True, **status, "options": vision.available_targets()}
+
+
+@app.post("/api/vision/stop")
+async def vision_stop() -> dict[str, Any]:
+    status = await vision.stop_detection()
+    return {"ok": True, **status, "options": vision.available_targets()}
 
 
 @app.post("/api/voice/process")
@@ -675,7 +701,7 @@ async def handle_ws_message(message: dict[str, Any]) -> None:
     elif msg_type == "task_stop":
         await navigation_stop()
     elif msg_type == "vision_detect":
-        await vision_detect()
+        await vision_detect(payload)
     elif msg_type == "alarm_confirm":
         alarm_id = payload.get("alarm_id")
         if alarm_id:

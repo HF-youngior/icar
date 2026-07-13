@@ -42,3 +42,40 @@ python vision/infer_yolov5.py \
 
 `--source 0` 表示摄像头；也可以换成图片、视频、RTSP 地址。
 
+## 不抢摄像头的真车接法
+
+如果小车已经提供原生视频流 `http://小车IP:6500/video_feed`，推荐不要再让 YOLO 直接打开 `/dev/video0`。
+
+本项目提供了一个轻量桥接脚本：
+
+```text
+robot/yolo_stream_service.py
+```
+
+它的设计是：
+
+- 从现成的 `6500/video_feed` 读取一帧
+- 调用小车本地已有的 YOLOv5 推理代码
+- 通过 HTTP 返回检测结果 JSON
+- 不直接占用摄像头设备
+
+典型启动方式示例：
+
+```bash
+python3 robot/yolo_stream_service.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --stream-url http://127.0.0.1:6500/video_feed \
+  --yolo-root /home/jetson/yolov5-7.0 \
+  --weights /home/jetson/Yolov5ptFile/yolov5s.pt \
+  --data /home/jetson/yolov5-7.0/data/coco128.yaml
+```
+
+后端可通过这些环境变量切到远端 YOLO 服务：
+
+```bash
+export ICAR_VISION_MODE=remote
+export ICAR_VISION_HOST=192.168.137.173
+export ICAR_VISION_PORT=8765
+export ICAR_VISION_STREAM_URL=http://192.168.137.173:6500/video_feed
+```
