@@ -919,6 +919,7 @@ pre#slamLogs {
 }
 
 .video-frame {
+  position: relative;
   border: 1px solid rgba(120, 240, 255, 0.22);
   border-radius: 8px;
   overflow: hidden;
@@ -933,11 +934,94 @@ pre#slamLogs {
   object-fit: cover;
 }
 
+.gesture-video-frame {
+  aspect-ratio: 4 / 3;
+}
+
+.gesture-video-frame img {
+  object-fit: contain;
+}
+
+#gestureCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.gesture-lock {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid rgba(120, 240, 255, 0.22);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(3, 8, 20, 0.82);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+}
+
+.gesture-lock.ready {
+  color: var(--lime);
+  border-color: rgba(125, 255, 155, 0.42);
+}
+
+.gesture-lock.warning {
+  color: var(--amber);
+  border-color: rgba(255, 207, 90, 0.46);
+}
+
+.gesture-lock.danger {
+  color: var(--red);
+  border-color: rgba(255, 95, 115, 0.52);
+}
+
 .camera-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) repeat(4, auto);
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.gesture-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(130px, 170px) minmax(120px, 150px);
+  gap: 10px;
+  margin-bottom: 10px;
+  align-items: stretch;
+}
+
+.gesture-toolbar label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gesture-toolbar input {
+  min-height: 38px;
+}
+
+.gesture-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.gesture-pills span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid rgba(120, 240, 255, 0.18);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 12px;
 }
 
 @media (max-width: 1120px) {
@@ -993,7 +1077,8 @@ pre#slamLogs {
   .goal-list,
   .pose-grid,
   .step-grid,
-  .slam-param-grid {
+  .slam-param-grid,
+  .gesture-toolbar {
     grid-template-columns: 1fr;
   }
 

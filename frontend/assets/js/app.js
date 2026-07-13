@@ -14,6 +14,20 @@ const state = {
     active: false,
     currentUrl: "",
   },
+  gesture: {
+    enabled: false,
+    loading: false,
+    model: null,
+    timer: null,
+    processing: false,
+    lastGesture: "none",
+    stableGesture: "none",
+    stableCount: 0,
+    lastSentGesture: "",
+    lastCommandAt: 0,
+    status: "idle",
+    message: "手势控制未开启",
+  },
   slam: {
     maps: [],
     selectedMap: "",
@@ -312,6 +326,7 @@ function renderVisionPage() {
       })).join("")
       : `<div class="timeline-item"><strong>暂无检测</strong><span>点击检测一次或等待模拟检测事件</span></div>`;
   }
+  renderGestureStatus();
 }
 
 function renderAlarmsPage() {
@@ -554,12 +569,371 @@ function stopCamera() {
   const image = $("visionImage");
   state.camera.active = false;
   state.camera.currentUrl = "";
+  stopGestureControl();
   if (image) {
     image.onload = null;
     image.onerror = null;
     image.src = "/assets/sample-detection.svg";
   }
   setText("cameraStatus", "摄像头已停止");
+}
+
+const HAND_CONNECTIONS_LOCAL = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+const GESTURE_COMMANDS = {
+  fist: { direction: "stop", label: "握拳 停止" },
+  one: { direction: "backward", label: "1 后退" },
+  two: { direction: "left", label: "2 左转" },
+  three: { direction: "right", label: "3 右转" },
+  five: { direction: "forward", label: "五指张开 前进" },
+};
+
+function renderGestureStatus() {
+  if (page !== "vision") return;
+  const button = $("gestureToggleBtn");
+  if (button) {
+    button.textContent = state.gesture.enabled ? "关闭手势控制" : "开启手势控制";
+    button.disabled = state.gesture.loading;
+  }
+  const status = $("gestureStatus");
+  if (status) {
+    status.textContent = state.gesture.message || "手势控制未开启";
+    status.classList.toggle("ready", state.gesture.status === "ready");
+    status.classList.toggle("warning", state.gesture.status === "warning");
+    status.classList.toggle("danger", state.gesture.status === "danger");
+  }
+}
+
+function setGestureStatus(message, status = "idle") {
+  state.gesture.message = message;
+  state.gesture.status = status;
+  renderGestureStatus();
+}
+
+function loadScriptOnce(src, globalName) {
+  if (globalName && window[globalName]) return Promise.resolve();
+  const existing = document.querySelector(`script[src="${src}"]`);
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      window.setTimeout(resolve, 500);
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureGestureModel() {
+  if (state.gesture.model) return state.gesture.model;
+  await loadScriptOnce("https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js", "Hands");
+  if (!window.Hands) {
+    throw new Error("MediaPipe Hands 未加载");
+  }
+  const hands = new window.Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+  });
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.65,
+    minTrackingConfidence: 0.55,
+  });
+  hands.onResults(handleGestureResults);
+  state.gesture.model = hands;
+  return hands;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function preferGestureCameraSource() {
+  if (!state.camera.candidates.length) {
+    await loadCameraCandidates();
+  }
+  const current = state.camera.candidates[state.camera.index];
+  if (current?.url?.startsWith("/api/camera/stream")) return;
+  const preferredIndex = state.camera.candidates.findIndex((candidate) => (
+    candidate.url?.startsWith("/api/camera/stream") && candidate.label.includes("6500")
+  ));
+  const fallbackIndex = state.camera.candidates.findIndex((candidate) => candidate.url?.startsWith("/api/camera/stream"));
+  const targetIndex = preferredIndex >= 0 ? preferredIndex : fallbackIndex;
+  if (targetIndex >= 0) {
+    startCameraAt(targetIndex);
+    await delay(900);
+  }
+}
+
+async function toggleGestureControl() {
+  if (state.gesture.enabled || state.gesture.loading) {
+    stopGestureControl();
+    return;
+  }
+  await startGestureControl();
+}
+
+async function startGestureControl() {
+  if (page !== "vision") return;
+  state.gesture.loading = true;
+  renderGestureStatus();
+  setGestureStatus("正在加载 MediaPipe Hands...", "warning");
+  try {
+    await preferGestureCameraSource();
+    await ensureGestureModel();
+    state.gesture.enabled = true;
+    state.gesture.loading = false;
+    state.gesture.lastSentGesture = "";
+    setGestureStatus("等待手掌进入画面", "warning");
+    scheduleGestureFrame(80);
+  } catch (error) {
+    console.warn("gesture start failed", error);
+    state.gesture.enabled = false;
+    state.gesture.loading = false;
+    setGestureStatus(`手势控制启动失败：${error.message || error}`, "danger");
+  }
+}
+
+function stopGestureControl() {
+  if (state.gesture.timer) {
+    clearTimeout(state.gesture.timer);
+    state.gesture.timer = null;
+  }
+  state.gesture.enabled = false;
+  state.gesture.loading = false;
+  state.gesture.processing = false;
+  state.gesture.lastGesture = "none";
+  state.gesture.stableGesture = "none";
+  state.gesture.stableCount = 0;
+  state.gesture.lastSentGesture = "";
+  clearGestureCanvas();
+  setGestureStatus("手势控制未开启", "idle");
+}
+
+function scheduleGestureFrame(ms = 160) {
+  if (!state.gesture.enabled) return;
+  if (state.gesture.timer) clearTimeout(state.gesture.timer);
+  state.gesture.timer = window.setTimeout(processGestureFrame, ms);
+}
+
+async function processGestureFrame() {
+  if (!state.gesture.enabled) return;
+  const image = $("visionImage");
+  if (!image || !image.complete || !image.naturalWidth) {
+    setGestureStatus("等待摄像头画面", "warning");
+    scheduleGestureFrame(220);
+    return;
+  }
+  if (state.gesture.processing) {
+    scheduleGestureFrame(120);
+    return;
+  }
+  state.gesture.processing = true;
+  try {
+    await state.gesture.model.send({ image });
+  } catch (error) {
+    console.warn("gesture frame failed", error);
+    setGestureStatus(`手势识别失败：${error.message || error}`, "danger");
+  } finally {
+    state.gesture.processing = false;
+    scheduleGestureFrame(170);
+  }
+}
+
+function clearGestureCanvas() {
+  const canvas = $("gestureCanvas");
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  if (context) context.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function resizeGestureCanvas() {
+  const canvas = $("gestureCanvas");
+  const frame = canvas?.parentElement;
+  if (!canvas || !frame) return null;
+  const rect = frame.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return canvas;
+}
+
+function imageContentRect(image, canvas) {
+  const imageWidth = image?.naturalWidth || canvas.width;
+  const imageHeight = image?.naturalHeight || canvas.height;
+  const scale = Math.min(canvas.width / imageWidth, canvas.height / imageHeight);
+  const width = imageWidth * scale;
+  const height = imageHeight * scale;
+  return {
+    x: (canvas.width - width) / 2,
+    y: (canvas.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+function toCanvasPoint(point, rect) {
+  return {
+    x: rect.x + point.x * rect.width,
+    y: rect.y + point.y * rect.height,
+  };
+}
+
+function drawHandSkeleton(landmarks) {
+  const canvas = resizeGestureCanvas();
+  const image = $("visionImage");
+  if (!canvas || !landmarks?.length) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const rect = imageContentRect(image, canvas);
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.strokeStyle = "rgba(38, 244, 255, 0.92)";
+  HAND_CONNECTIONS_LOCAL.forEach(([from, to]) => {
+    const a = toCanvasPoint(landmarks[from], rect);
+    const b = toCanvasPoint(landmarks[to], rect);
+    context.beginPath();
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.stroke();
+  });
+  landmarks.forEach((point, index) => {
+    const p = toCanvasPoint(point, rect);
+    context.beginPath();
+    context.fillStyle = index % 4 === 0 ? "rgba(255, 207, 90, 0.96)" : "rgba(125, 255, 155, 0.96)";
+    context.arc(p.x, p.y, index % 4 === 0 ? 5 : 4, 0, Math.PI * 2);
+    context.fill();
+  });
+}
+
+function distance(a, b) {
+  return Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0), (a.z || 0) - (b.z || 0));
+}
+
+function isFingerExtended(landmarks, tip, pip, mcp) {
+  const wrist = landmarks[0];
+  const tipPoint = landmarks[tip];
+  const pipPoint = landmarks[pip];
+  const mcpPoint = landmarks[mcp];
+  const verticalOpen = tipPoint.y < pipPoint.y - 0.018;
+  const radialOpen = distance(tipPoint, wrist) > distance(pipPoint, wrist) * 1.12
+    && distance(tipPoint, mcpPoint) > distance(pipPoint, mcpPoint) * 1.02;
+  return verticalOpen || radialOpen;
+}
+
+function isThumbExtended(landmarks) {
+  const wrist = landmarks[0];
+  const thumbTip = landmarks[4];
+  const thumbIp = landmarks[3];
+  const indexMcp = landmarks[5];
+  return distance(thumbTip, indexMcp) > distance(thumbIp, indexMcp) * 1.28
+    && distance(thumbTip, wrist) > distance(landmarks[2], wrist) * 1.05;
+}
+
+function classifyGesture(landmarks) {
+  if (!landmarks?.length) return "none";
+  const fingers = {
+    index: isFingerExtended(landmarks, 8, 6, 5),
+    middle: isFingerExtended(landmarks, 12, 10, 9),
+    ring: isFingerExtended(landmarks, 16, 14, 13),
+    pinky: isFingerExtended(landmarks, 20, 18, 17),
+    thumb: isThumbExtended(landmarks),
+  };
+  const raised = [fingers.index, fingers.middle, fingers.ring, fingers.pinky].filter(Boolean).length;
+  if (raised === 0) return "fist";
+  if (fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) return "one";
+  if (fingers.index && fingers.middle && !fingers.ring && !fingers.pinky) return "two";
+  if (fingers.index && fingers.middle && fingers.ring && !fingers.pinky) return "three";
+  if (raised === 4 && fingers.thumb) return "five";
+  return "unknown";
+}
+
+function updateStableGesture(gesture) {
+  if (gesture === state.gesture.lastGesture) {
+    state.gesture.stableCount += 1;
+  } else {
+    state.gesture.lastGesture = gesture;
+    state.gesture.stableCount = 1;
+  }
+  if (state.gesture.stableCount >= 2) {
+    state.gesture.stableGesture = gesture;
+  }
+}
+
+function gestureDurationMs() {
+  const raw = Number($("gestureDurationInput")?.value || 1000);
+  return Math.max(200, Math.min(1000, Math.round(raw)));
+}
+
+function gestureSpeed() {
+  const raw = Number($("gestureSpeedInput")?.value || 0.1);
+  return Math.max(0.08, Math.min(0.16, raw));
+}
+
+async function sendGestureCommand(gesture) {
+  const command = GESTURE_COMMANDS[gesture];
+  if (!command) return;
+  const now = Date.now();
+  if (gesture === state.gesture.lastSentGesture) return;
+  if (now - state.gesture.lastCommandAt < 550) return;
+  state.gesture.lastCommandAt = now;
+  state.gesture.lastSentGesture = gesture;
+  setGestureStatus(`已识别：${command.label}`, "ready");
+  if (command.direction === "stop") {
+    await sendStopNow(true);
+    return;
+  }
+  try {
+    await postJson("/api/control/manual", {
+      direction: command.direction,
+      speed: gestureSpeed(),
+      duration_ms: gestureDurationMs(),
+    });
+  } catch (error) {
+    console.warn("gesture command failed", error);
+    setGestureStatus(`手势控制发送失败：${error.message || error}`, "danger");
+  }
+}
+
+function handleGestureResults(results) {
+  if (!state.gesture.enabled) return;
+  const landmarks = results.multiHandLandmarks?.[0];
+  if (!landmarks) {
+    clearGestureCanvas();
+    state.gesture.lastGesture = "none";
+    state.gesture.stableGesture = "none";
+    state.gesture.stableCount = 0;
+    state.gesture.lastSentGesture = "";
+    setGestureStatus("未检测到手掌，控制禁止", "warning");
+    return;
+  }
+  drawHandSkeleton(landmarks);
+  const gesture = classifyGesture(landmarks);
+  updateStableGesture(gesture);
+  const command = GESTURE_COMMANDS[state.gesture.stableGesture];
+  if (!command) {
+    state.gesture.lastSentGesture = "";
+    setGestureStatus("已检测到手掌，等待明确手势", "warning");
+    return;
+  }
+  sendGestureCommand(state.gesture.stableGesture);
 }
 
 async function sendManualHttp(direction) {
@@ -1516,6 +1890,9 @@ function bindEvents() {
   $("cameraSelect")?.addEventListener("change", () => {
     state.camera.attempts = 0;
     startCameraAt(Number($("cameraSelect")?.value || 0));
+  });
+  $("gestureToggleBtn")?.addEventListener("click", () => {
+    toggleGestureControl();
   });
   $("speedRange")?.addEventListener("input", updateSpeedDisplay);
   $("voiceToggleBtn")?.addEventListener("click", () => {

@@ -73,6 +73,12 @@ def check_api() -> None:
         if camera.status_code != 200 or labels[:2] != ["原生 App 实时画面（默认）", "自建摄像头 8080（备用）"]:
             raise AssertionError(f"camera candidates failed: {camera.text}")
 
+        vision_page = client.get("/vision")
+        vision_text = vision_page.text
+        for marker in ("gestureToggleBtn", "gestureDurationInput", "gestureCanvas", "@mediapipe/hands"):
+            if vision_page.status_code != 200 or marker not in vision_text:
+                raise AssertionError(f"vision gesture UI missing marker: {marker}")
+
         manual = client.post("/api/control/manual", json={"direction": "forward", "speed": 0.16})
         if manual.status_code != 200 or not manual.json().get("ok"):
             raise AssertionError(f"manual failed: {manual.text}")
