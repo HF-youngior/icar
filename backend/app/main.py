@@ -26,8 +26,10 @@ from .navigation import NavigationService
 from .sensors import SensorService
 from .slam_runtime import SlamRuntimeManager
 from .state import StateHub
+from .tts import TencentTtsService
 from .vision import VisionService
 from .voice import VoicePipeline
+from .voice_records import VoiceInteractionStore
 
 
 config = load_config()
@@ -40,21 +42,17 @@ navigation = NavigationService(config, state, adapter)
 sensors = SensorService(config, state)
 vision = VisionService(config, state)
 voice = VoicePipeline()
-mcp_tools = McpToolService(state, adapter)
+tts = TencentTtsService()
+mcp_tools = McpToolService(state, adapter, tts)
+voice_records = VoiceInteractionStore()
 slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
 cruise_routes_lock = asyncio.Lock()
 CRUISE_ROUTES_FILE = PROJECT_ROOT / "data" / "cruise_routes.json"
 
 
-async def maybe_execute_llm_tool(parsed_output: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(parsed_output, dict):
-        return None
-    if parsed_output.get("intent") != "tool_call":
-        return None
-
-    tool_name = str(parsed_output.get("tool", "")).strip()
-    arguments = parsed_output.get("arguments")
+async def execute_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    tool_name = str(tool_name).strip()
     if not isinstance(arguments, dict):
         raise ValueError("LLM tool arguments must be an object")
 
@@ -63,6 +61,14 @@ async def maybe_execute_llm_tool(parsed_output: dict[str, Any] | None) -> dict[s
             arguments.get("direction", ""),
             float(arguments.get("meters", 0)),
         )
+    if tool_name == "speak":
+        return await mcp_tools.speak(
+            arguments.get("mode", ""),
+            text=arguments.get("text", ""),
+            preset_key=arguments.get("preset_key", ""),
+        )
+    if tool_name == "speak_text":
+        return await mcp_tools.speak_text(arguments.get("text", ""))
 
     raise ValueError(f"Unsupported tool requested by LLM: {tool_name}")
 
@@ -95,6 +101,54 @@ def _normalize_cruise_route_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "route": route,
         "updated_at": saved_at,
     }
+
+
+async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(parsed_output, dict):
+        return []
+
+    raw_tool_calls = parsed_output.get("tool_calls")
+    tool_calls: list[dict[str, Any]] = []
+    if isinstance(raw_tool_calls, list):
+        tool_calls = [call for call in raw_tool_calls if isinstance(call, dict)]
+    elif parsed_output.get("intent") == "tool_call":
+        tool_calls = [
+            {
+                "name": parsed_output.get("tool", ""),
+                "arguments": parsed_output.get("arguments", {}),
+            }
+        ]
+
+    results: list[dict[str, Any]] = []
+    for call in tool_calls:
+        tool_name = str(call.get("name") or call.get("tool") or "").strip()
+        arguments = call.get("arguments") or {}
+        if not tool_name:
+            continue
+        results.append(await execute_mcp_tool_call(tool_name, arguments))
+    return results
+
+
+def _prepared_key_for_reply(reply: str) -> str:
+    text = str(reply).strip()
+    for key, voice_item in mcp_tools.prepared_voices.items():
+        if text == voice_item.get("text"):
+            return key
+    return ""
+
+
+async def ensure_voice_reply(parsed_output: dict[str, Any] | None, tool_executions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if any(item.get("tool") in {"speak", "speak_text"} for item in tool_executions):
+        return None
+    if not isinstance(parsed_output, dict):
+        return None
+    reply = str(parsed_output.get("reply", "")).strip()
+    if not reply:
+        return None
+    preset_key = _prepared_key_for_reply(reply)
+    if preset_key:
+        return await mcp_tools.speak("preset", text=reply, preset_key=preset_key)
+    return await mcp_tools.speak("tts", text=reply)
 
 app = FastAPI(title="智能家居管家机器人平台", version="0.1.0")
 app.add_middleware(
@@ -198,6 +252,16 @@ async def db_health() -> dict[str, Any]:
 @app.get("/api/voice/health")
 async def voice_health() -> dict[str, Any]:
     return voice.health(mcp_tools.tool_definitions())
+
+
+@app.get("/api/voice/records")
+async def voice_record_list(limit: int = 20) -> dict[str, Any]:
+    return {"ok": True, "records": voice_records.list_recent(limit=max(1, min(limit, 100)))}
+
+
+@app.get("/api/tts/health")
+async def tts_health() -> dict[str, Any]:
+    return tts.health()
 
 
 @app.post("/api/car/reconnect")
@@ -354,6 +418,30 @@ async def mcp_move_distance(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("mcp move_distance failed")
         await state.add_alarm("mcp_tool", "warning", f"工具移动失败：{exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/speak")
+async def mcp_speak(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.speak(
+            payload.get("mode", ""),
+            text=payload.get("text", ""),
+            preset_key=payload.get("preset_key", ""),
+        )
+    except Exception as exc:
+        logger.exception("mcp speak failed")
+        await state.add_alarm("mcp_tool", "warning", f"语音回复工具失败：{exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/speak-text")
+async def mcp_speak_text(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.speak_text(payload.get("text", ""))
+    except Exception as exc:
+        logger.exception("mcp speak_text failed")
+        await state.add_alarm("mcp_tool", "warning", f"TTS task submit failed: {exc}", "backend")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -742,23 +830,107 @@ async def voice_process(request: Request) -> dict[str, Any]:
             voice_format=voice_format,
             tool_definitions=mcp_tools.tool_definitions(),
         )
-        tool_execution = None
+        tool_executions: list[dict[str, Any]] = []
         if result.get("wake_phrase_matched") and result.get("llm_parsed_output"):
-            tool_execution = await maybe_execute_llm_tool(result.get("llm_parsed_output"))
-        result["tool_execution"] = tool_execution
-        if tool_execution:
-            reply = result.get("llm_parsed_output", {}).get("reply")
+            tool_executions = await maybe_execute_llm_tools(result.get("llm_parsed_output"))
+            fallback_voice = await ensure_voice_reply(result.get("llm_parsed_output"), tool_executions)
+            if fallback_voice:
+                tool_executions.append(fallback_voice)
+        elif result.get("wake_phrase_matched") and result.get("llm_enabled"):
+            tool_executions.append(await mcp_tools.speak("preset", preset_key="unknown"))
+            result["llm_output"] = "不知道"
+        elif result.get("wake_phrase_matched") and not result.get("llm_enabled"):
+            tool_executions.append(await mcp_tools.speak("preset", preset_key="wake_ack"))
+            result["llm_output"] = "我在"
+        result["tool_executions"] = tool_executions
+        result["tool_execution"] = tool_executions[0] if tool_executions else None
+        if tool_executions:
+            parsed_output = result.get("llm_parsed_output")
+            reply = parsed_output.get("reply") if isinstance(parsed_output, dict) else ""
             if reply:
                 result["llm_output"] = reply
         elif not result.get("wake_phrase_matched"):
             result["llm_output"] = "未匹配到唤醒词，本次语音不会触发控制。"
         elif result.get("wake_phrase_matched") and not result.get("llm_enabled"):
             result["llm_output"] = "已识别到唤醒词，但当前还没有可用的 LLM 配置。"
+        result["voice_record"] = voice_records.append(
+            {
+                "asr_raw_text": result.get("transcript", ""),
+                "normalized_text": result.get("normalized_transcript", ""),
+                "wake_phrase_matched": result.get("wake_phrase_matched", False),
+                "wake_phrase": result.get("wake_phrase", ""),
+                "llm_input": result.get("llm_input", ""),
+                "llm_enabled": result.get("llm_enabled", False),
+                "llm_output": result.get("llm_output", ""),
+                "llm_parsed_output": result.get("llm_parsed_output"),
+                "intent_summary": (result.get("llm_parsed_output") or {}).get("intent_summary")
+                if isinstance(result.get("llm_parsed_output"), dict)
+                else "",
+                "tool_executions": tool_executions,
+                "tencent_request_id": result.get("tencent_request_id"),
+                "tencent_audio_duration_ms": result.get("tencent_audio_duration_ms"),
+            }
+        )
         return result
     except Exception as exc:
         logger.exception("voice processing failed")
         await state.add_alarm("voice", "warning", f"语音处理失败：{exc}", "backend")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/tts/tasks")
+async def tts_submit_task(payload: dict[str, Any]) -> dict[str, Any]:
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        task = await asyncio.to_thread(tts.submit_task, text, source=str(payload.get("source", "api")))
+        return {"ok": True, "task": task}
+    except Exception as exc:
+        logger.exception("tts submit task failed")
+        await state.add_alarm("tts", "warning", f"TTS task submit failed: {exc}", "backend")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/tts/tasks")
+async def tts_list_tasks(limit: int = 20) -> dict[str, Any]:
+    return {"ok": True, "tasks": tts.list_tasks(limit=max(1, min(limit, 100)))}
+
+
+@app.get("/api/tts/tasks/{task_id}")
+async def tts_get_task(task_id: str, refresh: bool = False) -> dict[str, Any]:
+    try:
+        task = await asyncio.to_thread(tts.query_task, task_id) if refresh else tts.get_task(task_id)
+    except Exception as exc:
+        logger.exception("tts query failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    return {"ok": True, "task": task}
+
+
+@app.post("/api/tts/tencent/callback")
+async def tts_tencent_callback(request: Request) -> dict[str, Any]:
+    body = await request.body()
+    try:
+        task = await asyncio.to_thread(tts.handle_callback_form, body)
+        await state.add_report(
+            title="TTS callback received",
+            summary=f"Tencent TTS task {task.get('task_id')} status: {task.get('status_str')}",
+            details={
+                "task_id": task.get("task_id"),
+                "status": task.get("status"),
+                "status_str": task.get("status_str"),
+                "result_url": task.get("result_url"),
+                "audio_file": task.get("audio_file"),
+                "error_msg": task.get("error_msg"),
+            },
+        )
+        return {"ok": True}
+    except Exception as exc:
+        logger.exception("tts callback failed")
+        await state.add_alarm("tts", "warning", f"TTS callback failed: {exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/alarms/{alarm_id}/confirm")
