@@ -14,6 +14,12 @@ const state = {
     active: false,
     currentUrl: "",
   },
+  visionControl: {
+    running: false,
+    targets: ["person"],
+    options: [],
+    streamUrl: "",
+  },
   slam: {
     maps: [],
     selectedMap: "",
@@ -57,6 +63,7 @@ const state = {
     routes: [],
     sensors: [],
     vision: [],
+    vision_control: {},
     alarms: [],
     reports: [],
   },
@@ -187,6 +194,11 @@ function handleMessage(type, payload) {
   } else if (type === "vision_event") {
     state.snapshot.vision.unshift(payload);
     state.snapshot.vision = state.snapshot.vision.slice(0, 20);
+  } else if (type === "vision_status") {
+    state.snapshot.vision_control = payload;
+    state.visionControl.running = !!payload.running;
+    state.visionControl.targets = payload.targets || ["person"];
+    state.visionControl.streamUrl = payload.stream_url || "";
   } else if (type === "alarm_event") {
     state.snapshot.alarms.unshift(payload);
     state.snapshot.alarms = state.snapshot.alarms.slice(0, 40);
@@ -297,21 +309,43 @@ function renderVoice() {
 function renderVisionPage() {
   const list = $("visionList");
   const events = state.snapshot.vision || [];
+  const visionControl = state.snapshot.vision_control || {};
+  state.visionControl.running = !!visionControl.running;
+  state.visionControl.targets = visionControl.targets || state.visionControl.targets || ["person"];
+  state.visionControl.streamUrl = visionControl.stream_url || state.visionControl.streamUrl || "";
+  syncVisionTargetSelect();
+  setText("visionModeHint", state.visionControl.running
+    ? `检测中：${selectedVisionTargetLabels().join("、")} · 视频继续走原生流`
+    : `待机中：可选择人员/宠物等目标后开始检测，视频继续走原生流`);
   if (events.length) {
     const latest = events[0];
     setText("visionSummary", `${latest.label_zh || latest.label} · ${Math.round((latest.confidence || 0) * 100)}%`);
-    const image = $("visionImage");
-    if (image && latest.image_url && !state.camera.active) image.src = latest.image_url;
+    renderDetectionImage(latest);
+  } else {
+    renderDetectionImage(null);
   }
   if (list) {
     list.innerHTML = events.length
       ? events.slice(0, 12).map((event) => renderTimelineItem({
         title: event.label_zh || event.label,
-        meta: `${event.timestamp || ""} · 置信度 ${Math.round((event.confidence || 0) * 100)}% · ${event.source || ""}`,
+        meta: `${event.timestamp || ""} · 置信度 ${Math.round((event.confidence || 0) * 100)}% · ${(event.target_filter || []).join("/") || "all"} · ${event.source || ""}`,
         level: event.risk === "warning" ? "warning" : "normal",
       })).join("")
-      : `<div class="timeline-item"><strong>暂无检测</strong><span>点击检测一次或等待模拟检测事件</span></div>`;
+      : `<div class="timeline-item"><strong>暂无检测</strong><span>选择检测目标后点击“检测一次”或“开始检测”</span></div>`;
   }
+}
+
+function renderDetectionImage(event) {
+  const image = $("detectionImage");
+  if (!image) return;
+  if (!event?.image_url) {
+    image.src = "/assets/sample-detection.svg";
+    setText("detectionImageStatus", "等待检测");
+    return;
+  }
+  image.src = event.image_url;
+  const label = event.label_zh || event.label || "目标";
+  setText("detectionImageStatus", `${label} · ${Math.round((event.confidence || 0) * 100)}%`);
 }
 
 function renderAlarmsPage() {
@@ -487,6 +521,111 @@ async function loadCameraCandidates() {
   } catch (error) {
     console.warn("camera candidates failed", error);
     setText("cameraStatus", "摄像头地址加载失败");
+  }
+}
+
+async function loadVisionStatus() {
+  try {
+    const data = await getJson("/api/vision/status");
+    state.visionControl.running = !!data.running;
+    state.visionControl.options = data.options || [];
+    state.visionControl.targets = reconcileVisionTargets(data.targets || state.visionControl.targets);
+    state.visionControl.streamUrl = data.stream_url || "";
+    state.snapshot.vision_control = {
+      running: state.visionControl.running,
+      targets: state.visionControl.targets,
+      source: data.source || "camera_stream",
+      stream_url: state.visionControl.streamUrl,
+    };
+    populateVisionTargetOptions();
+    renderVisionPage();
+  } catch (error) {
+    console.warn("vision status failed", error);
+  }
+}
+
+function populateVisionTargetOptions() {
+  const select = $("visionTargetSelect");
+  if (!select) return;
+  const options = state.visionControl.options || [];
+  state.visionControl.targets = reconcileVisionTargets(state.visionControl.targets);
+  select.innerHTML = options.map((option) => (
+    `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label_zh || option.label)}</option>`
+  )).join("");
+  syncVisionTargetSelect();
+}
+
+function reconcileVisionTargets(targets) {
+  const options = state.visionControl.options || [];
+  const optionIds = new Set(options.map((option) => option.id));
+  const selected = (targets || []).filter((target) => optionIds.has(target));
+  if (selected.length) return selected;
+  if (options.length) return [options[0].id];
+  return ["person"];
+}
+
+function syncVisionTargetSelect() {
+  const select = $("visionTargetSelect");
+  if (!select) return;
+  const selected = new Set(reconcileVisionTargets(state.visionControl.targets));
+  Array.from(select.options).forEach((option) => {
+    option.selected = selected.has(option.value);
+  });
+}
+
+function selectedVisionTargets() {
+  const select = $("visionTargetSelect");
+  const values = select
+    ? Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean)
+    : [];
+  return values.length ? values : reconcileVisionTargets(state.visionControl.targets);
+}
+
+function selectedVisionTargetLabels() {
+  const select = $("visionTargetSelect");
+  const labels = select
+    ? Array.from(select.selectedOptions).map((option) => option.textContent?.trim()).filter(Boolean)
+    : [];
+  return labels.length ? labels : ["人员"];
+}
+
+async function detectVisionOnce() {
+  try {
+    const result = await postJson("/api/vision/detect", { targets: selectedVisionTargets() });
+    state.snapshot.vision.unshift(result);
+    state.snapshot.vision = state.snapshot.vision.slice(0, 20);
+    renderVisionPage();
+  } catch (error) {
+    console.warn("vision detect failed", error);
+    setText("visionSummary", `检测失败：${error.message}`);
+  }
+}
+
+async function startVisionDetection() {
+  try {
+    const result = await postJson("/api/vision/start", { targets: selectedVisionTargets() });
+    state.visionControl.running = !!result.running;
+    state.visionControl.options = result.options || state.visionControl.options;
+    state.visionControl.targets = reconcileVisionTargets(result.targets || state.visionControl.targets);
+    state.snapshot.vision_control = result;
+    renderVisionPage();
+  } catch (error) {
+    console.warn("vision start failed", error);
+    setText("visionSummary", `启动检测失败：${error.message}`);
+  }
+}
+
+async function stopVisionDetection() {
+  try {
+    const result = await postJson("/api/vision/stop", {});
+    state.visionControl.running = !!result.running;
+    state.visionControl.options = result.options || state.visionControl.options;
+    state.visionControl.targets = reconcileVisionTargets(result.targets || state.visionControl.targets);
+    state.snapshot.vision_control = result;
+    renderVisionPage();
+  } catch (error) {
+    console.warn("vision stop failed", error);
+    setText("visionSummary", `停止检测失败：${error.message}`);
   }
 }
 
@@ -1503,7 +1642,13 @@ function bindEvents() {
   $("estopBtn")?.addEventListener("click", emergencyStop);
   $("reconnectCarBtn")?.addEventListener("click", reconnectCar);
   $("stopTaskBtn")?.addEventListener("click", stopNavigationTask);
-  $("detectBtn")?.addEventListener("click", () => send("vision_detect", {}));
+  $("detectBtn")?.addEventListener("click", detectVisionOnce);
+  $("visionStartBtn")?.addEventListener("click", startVisionDetection);
+  $("visionStopBtn")?.addEventListener("click", stopVisionDetection);
+  $("visionTargetSelect")?.addEventListener("change", () => {
+    state.visionControl.targets = selectedVisionTargets();
+    renderVisionPage();
+  });
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
   $("buzzerBtn")?.addEventListener("click", playBuzzerCue);
   $("followLineBtn")?.addEventListener("click", toggleFollowLine);
@@ -1533,6 +1678,9 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) sendStopNow();
   });
+  if (page === "vision") {
+    loadVisionStatus();
+  }
 }
 
 async function initPage() {

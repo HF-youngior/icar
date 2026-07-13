@@ -52,6 +52,14 @@ class StateHub:
             "pm25": {"name": "pm25", "label": "PM2.5", "value": 22, "unit": "ug/m3", "level": "normal"},
         }
         self.vision: list[dict[str, Any]] = []
+        default_stream_url = config.vision.stream_url or f"http://{config.car.host}:6500/video_feed"
+        self.vision_control: dict[str, Any] = {
+            "running": False,
+            "targets": ["person"],
+            "source": "remote_yolo_stream" if config.vision.mode in {"auto", "remote"} else "camera_stream",
+            "stream_url": default_stream_url,
+            "updated_at": now_text(),
+        }
         self.alarms: list[dict[str, Any]] = []
         self.reports: list[dict[str, Any]] = []
         resolve_project_path(config.reports_dir).mkdir(parents=True, exist_ok=True)
@@ -88,6 +96,7 @@ class StateHub:
             "routes": self.routes,
             "sensors": list(self.sensors.values()),
             "vision": self.vision[:10],
+            "vision_control": self.vision_control,
             "alarms": self.alarms[:20],
             "reports": self.reports[:20],
         }
@@ -116,6 +125,11 @@ class StateHub:
         self.vision = self.vision[:50]
         self.database.save_vision_event(event)
         await self.broadcast("vision_event", event)
+
+    async def update_vision_control(self, **changes: Any) -> None:
+        self.vision_control.update(changes)
+        self.vision_control["updated_at"] = now_text()
+        await self.broadcast("vision_status", self.vision_control)
 
     async def add_alarm(self, alarm_type: str, level: str, message: str, source: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         alarm = {

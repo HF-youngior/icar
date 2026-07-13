@@ -31,6 +31,16 @@
     "charset": "utf8mb4",
     "connect_timeout_sec": 5
   },
+  "vision": {
+    "mode": "auto",
+    "service_host": "",
+    "service_port": 8765,
+    "service_base_url": "",
+    "detect_path": "/detect",
+    "health_path": "/health",
+    "stream_url": "",
+    "request_timeout_sec": 8.0
+  },
   "points_file": "config/points.json",
   "routes_file": "config/routes.json",
   "reports_dir": "data/reports",

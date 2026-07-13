@@ -52,10 +52,23 @@ class DatabaseConfig:
 
 
 @dataclass
+class VisionConfig:
+    mode: str = "auto"
+    service_host: str = ""
+    service_port: int = 8765
+    service_base_url: str = ""
+    detect_path: str = "/detect"
+    health_path: str = "/health"
+    stream_url: str = ""
+    request_timeout_sec: float = 8.0
+
+
+@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     car: CarConfig = field(default_factory=CarConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     points_file: str = "config/points.json"
     routes_file: str = "config/routes.json"
     reports_dir: str = "data/reports"
@@ -79,6 +92,7 @@ def _dataclass_to_dict(config: AppConfig) -> dict[str, Any]:
         "server": vars(config.server),
         "car": vars(config.car),
         "database": vars(config.database),
+        "vision": vars(config.vision),
         "points_file": config.points_file,
         "routes_file": config.routes_file,
         "reports_dir": config.reports_dir,
@@ -93,10 +107,12 @@ def _from_dict(data: dict[str, Any]) -> AppConfig:
     server = ServerConfig(**data.get("server", {}))
     car = CarConfig(**data.get("car", {}))
     database = DatabaseConfig(**data.get("database", {}))
+    vision = VisionConfig(**data.get("vision", {}))
     return AppConfig(
         server=server,
         car=car,
         database=database,
+        vision=vision,
         points_file=data.get("points_file", "config/points.json"),
         routes_file=data.get("routes_file", "config/routes.json"),
         reports_dir=data.get("reports_dir", "data/reports"),
@@ -137,6 +153,12 @@ def load_config() -> AppConfig:
     default["car"]["port"] = int(os.getenv("ICAR_CAR_PORT", default["car"]["port"]))
     default["server"]["host"] = os.getenv("ICAR_HOST", default["server"]["host"])
     default["server"]["port"] = int(os.getenv("ICAR_PORT", default["server"]["port"]))
+    default["vision"]["mode"] = os.getenv("ICAR_VISION_MODE", default["vision"]["mode"])
+    default["vision"]["service_host"] = os.getenv("ICAR_VISION_HOST", default["vision"]["service_host"])
+    default["vision"]["service_port"] = int(os.getenv("ICAR_VISION_PORT", default["vision"]["service_port"]))
+    default["vision"]["service_base_url"] = os.getenv("ICAR_VISION_BASE_URL", default["vision"]["service_base_url"])
+    default["vision"]["stream_url"] = os.getenv("ICAR_VISION_STREAM_URL", default["vision"]["stream_url"])
+    default["vision_tick_sec"] = float(os.getenv("ICAR_VISION_TICK_SEC", default["vision_tick_sec"]))
     if os.getenv("ICAR_DB_HOST"):
         default["database"]["enabled"] = True
         default["database"]["host"] = os.getenv("ICAR_DB_HOST", default["database"]["host"])
