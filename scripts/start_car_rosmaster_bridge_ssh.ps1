@@ -126,7 +126,14 @@ Write-Host ""
 Copy-BridgeFile
 
 $KillScript = "pkill -f '[i]car_rosmaster_tcp_bridge.py' || true; pkill -f '[r]osmaster_test.py' || true"
-$StartScript = "cd $(Quote-Bash($RemoteDir)) && setsid python3 $(Quote-Bash($RemoteBridgeFile)) --host 0.0.0.0 --port $Port --speed $Speed --pulse-timeout-sec $PulseTimeoutSec </dev/null > /tmp/icar_rosmaster_tcp_bridge.log 2>&1 & echo `$! > /tmp/icar_rosmaster_tcp_bridge.pid || true; exit 0"
+$StartScript = @(
+    "cd $(Quote-Bash($RemoteDir))",
+    "nohup setsid -f python3 $(Quote-Bash($RemoteBridgeFile)) --host 0.0.0.0 --port $Port --speed $Speed --pulse-timeout-sec $PulseTimeoutSec </dev/null > /tmp/icar_rosmaster_tcp_bridge.log 2>&1",
+    "sleep 0.4",
+    "pgrep -f '[i]car_rosmaster_tcp_bridge.py' | head -n 1 > /tmp/icar_rosmaster_tcp_bridge.pid || true",
+    "echo started-icar-rosmaster-bridge",
+    "exit 0"
+) -join "; "
 
 Invoke-External $SshExecutable (@($SshOptions) + @($Target, "bash -lc $(Quote-Bash($KillScript))"))
 Invoke-External $SshExecutable (@($SshOptions) + @($Target, "bash -lc $(Quote-Bash($StartScript))"))

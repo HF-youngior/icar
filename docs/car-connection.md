@@ -789,6 +789,37 @@ Nav2 action: /navigate_to_pose ready
 bt_navigator: active
 ```
 
+## 15. 定点巡航页面
+
+定点巡航是一个独立页面：
+
+```text
+http://127.0.0.1:8000/cruise
+```
+
+手机同热点访问时，把地址里的 `127.0.0.1` 换成电脑热点 IP，例如：
+
+```text
+http://192.168.137.1:8000/cruise
+```
+
+基本流程：
+
+1. 先按前面的方式启动小车原生控制服务和 Web 后端，确保 `/control` 页面可以遥控小车。
+2. 打开 `/cruise`。
+3. 用巡航页里的遥控器移动小车，每到一个重要点就点击“保存途经点”。
+4. 至少保存 3 个途经点后，点击“规划路线”。
+5. 把小车手动移动回第一个途经点。
+6. 选择“只巡航一次 / 指定次数 / 不断循环”，设置停留秒数。
+7. 点击“开始巡航”。
+
+说明：
+
+- 巡航路线使用后端 `/api/cruise/plan` 的 A* 网格规划，并带有“尽量少转弯”的代价。
+- 相邻两个途经点之间会重新规划较优路径，最后一个点会返回第一个点。
+- 到达每个途经点后会自动短蜂鸣一次，并按页面设置停留。
+- 当前版本是基于页面估计网格和短脉冲控制，不等同于 SLAM/Nav2 的实时定位避障；真实测试时速度和脉冲时间要保守设置。
+
 只有看到这两个状态正常后，再执行：
 
 1. 点选当前位置/起点。
@@ -810,3 +841,18 @@ ssh jetson@192.168.137.173 "docker ps -a --filter name=icar_web_nav"
 2. 小车是否连接了雷达和底盘线。
 3. `icar_web_nav` 是否 running。
 4. `/api/slam/logs` 里是否有 `yahboomcar_nav`、`rplidar`、`map_server`、`nav2` 相关错误。
+
+## 16. 灯光控制说明
+
+老师提供的 `灯光/iCAR.zip` 里可以看到两类信息：
+
+- `bsp_car_lights.c`：车灯硬件是左右两个 GPIO 灯，分别在 `GPIOB PB10/PB11`。
+- `protocol.h`：协议里定义了 `FUNC_RGB = 0x05` 和 `FUNC_RGB_EFFECT = 0x06`，而 `0x30/0x31` 是阿克曼舵机角度，不应该只把它当灯光协议使用。
+
+所以现在 Web 灯光按钮会同时尝试三条路径：
+
+1. SSH 到小车后调用 `Rosmaster_Lib` 里可能存在的灯光方法，例如 `set_colorful_lamps`、`set_led`、`set_car_light`、`set_left_light`、`set_right_light` 等。
+2. 如果库里没有明确灯光方法，会尝试按老师源码里的底层串口协议发送 `FF FC ... 0x05/0x06 ... checksum`。
+3. 同时保留 TCP 兼容帧：优先发送新的 `0x05/0x06`，再发送旧的 `0x30/0x31` 和 App 兼容 `0x20` 帧。
+
+如果现场点击灯光仍然没有反应，下一步看后端返回里的 `available_light_methods`、`methods` 和 `errors`，确认小车当前 `Rosmaster_Lib` 到底暴露了哪些灯光 API。

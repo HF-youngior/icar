@@ -353,6 +353,12 @@ select:focus {
   gap: 14px;
 }
 
+.cruise-layout {
+  display: grid;
+  grid-template-columns: minmax(520px, 1.35fr) minmax(320px, 0.65fr);
+  gap: 14px;
+}
+
 .slam-flow {
   display: grid;
   grid-template-columns: minmax(520px, 1.25fr) minmax(320px, 0.75fr);
@@ -365,6 +371,10 @@ select:focus {
 }
 
 .slam-map-panel {
+  grid-row: span 3;
+}
+
+.cruise-map-panel {
   grid-row: span 3;
 }
 
@@ -595,7 +605,7 @@ select:focus {
 
 .aux-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -873,6 +883,160 @@ pre#slamLogs {
   word-break: break-word;
 }
 
+.cruise-toolbar,
+.cruise-waypoint-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.cruise-canvas-frame {
+  border: 1px solid rgba(120, 240, 255, 0.22);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #06101f;
+}
+
+#cruiseCanvas {
+  width: 100%;
+  aspect-ratio: 1.44;
+  display: block;
+}
+
+.cruise-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.cruise-control-grid.compact {
+  align-items: end;
+}
+
+.cruise-control-grid label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cruise-control-grid button {
+  min-height: 42px;
+}
+
+.cruise-control-grid input,
+.cruise-control-grid select {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.cruise-dpad {
+  width: min(270px, 100%);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 60px);
+  gap: 10px;
+  margin: 0 auto 12px;
+}
+
+.cruise-dpad button {
+  border: 1px solid rgba(38, 244, 255, 0.34);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(38, 244, 255, 0.08);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.cruise-dpad button:hover {
+  border-color: rgba(38, 244, 255, 0.75);
+  box-shadow: 0 0 20px rgba(38, 244, 255, 0.16);
+}
+
+.cruise-dpad button[data-dir="forward"] {
+  grid-column: 2;
+}
+
+.cruise-dpad button[data-dir="left"] {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.cruise-dpad button.stop {
+  grid-column: 2;
+  grid-row: 2;
+  border-color: rgba(255, 95, 115, 0.65);
+  color: #ffd7dd;
+  background: rgba(255, 95, 115, 0.13);
+}
+
+.cruise-dpad button[data-dir="right"] {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.cruise-dpad button[data-dir="backward"] {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.cruise-waypoint-list {
+  display: grid;
+  gap: 10px;
+}
+
+.cruise-point-item {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(120, 240, 255, 0.16);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(3, 9, 20, 0.58);
+  text-align: left;
+}
+
+.cruise-point-item.active {
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 22px rgba(38, 244, 255, 0.16);
+}
+
+.cruise-point-swatch {
+  width: 12px;
+  height: 38px;
+  border-radius: 8px;
+}
+
+.cruise-point-item strong,
+.cruise-point-item small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cruise-point-item small {
+  color: var(--muted);
+}
+
+pre#cruiseCommandLog {
+  min-height: 180px;
+  max-height: 280px;
+  margin: 12px 0 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid rgba(120, 240, 255, 0.14);
+  border-radius: 8px;
+  color: #d7ecff;
+  background: rgba(3, 9, 20, 0.72);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .progress-wrap {
   display: grid;
   grid-template-columns: 1fr 56px;
@@ -1054,7 +1218,7 @@ pre#slamLogs {
   }
 
   .rail-nav {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 
   .hero-grid,
@@ -1063,7 +1227,8 @@ pre#slamLogs {
   .vision-layout,
   .nav-layout,
   .slam-flow,
-  .slam-layout {
+  .slam-layout,
+  .cruise-layout {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -1083,6 +1248,7 @@ pre#slamLogs {
   .nav-layout,
   .slam-flow,
   .slam-layout,
+  .cruise-layout,
   .sensor-grid,
   .aux-grid,
   .voice-grid,
@@ -1097,6 +1263,9 @@ pre#slamLogs {
   .pose-grid,
   .step-grid,
   .slam-param-grid,
+  .cruise-toolbar,
+  .cruise-waypoint-actions,
+  .cruise-control-grid,
   .gesture-toolbar {
     grid-template-columns: 1fr;
   }

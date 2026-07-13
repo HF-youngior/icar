@@ -137,7 +137,10 @@ $StopScript = @(
 $StartScript = @(
     $StopScript,
     "python3 -m py_compile $(Quote-Bash($RemoteFile))",
-    "setsid python3 $(Quote-Bash($RemoteFile)) --host 0.0.0.0 --port $Port --device $(Quote-Bash($Device)) --width $Width --height $Height --fps $Fps </dev/null > $(Quote-Bash($RemoteLog)) 2>&1 & echo `$! > $(Quote-Bash($RemotePid))",
+    "nohup setsid -f python3 $(Quote-Bash($RemoteFile)) --host 0.0.0.0 --port $Port --device $(Quote-Bash($Device)) --width $Width --height $Height --fps $Fps </dev/null > $(Quote-Bash($RemoteLog)) 2>&1",
+    "sleep 0.4",
+    "pgrep -f '[i]car_camera_mjpeg_server.py' | head -n 1 > $(Quote-Bash($RemotePid)) || true",
+    "echo started-camera-mjpeg",
     "exit 0"
 ) -join "; "
 

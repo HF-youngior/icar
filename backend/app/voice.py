@@ -37,37 +37,81 @@ def _parse_env_map(raw_value: str) -> dict[str, str]:
 class VoiceSettings:
     wake_phrases: list[str] = None  # type: ignore[assignment]
     wake_replacements: dict[str, str] = None  # type: ignore[assignment]
-    tencent_secret_id: str = os.getenv("TENCENT_SECRET_ID", "")
-    tencent_secret_key: str = os.getenv("TENCENT_SECRET_KEY", "")
-    tencent_app_id: str = os.getenv("TENCENT_ASR_APP_ID", "")
-    tencent_region: str = os.getenv("TENCENT_ASR_REGION", "ap-beijing")
-    tencent_engine_model_type: str = os.getenv("TENCENT_ASR_ENGINE_MODEL_TYPE", "16k_zh")
-    tencent_project_id: int = int(os.getenv("TENCENT_ASR_PROJECT_ID", "0"))
-    tencent_hotword_id: str = os.getenv("TENCENT_ASR_HOTWORD_ID", "")
-    tencent_hotword_list: str = os.getenv("TENCENT_ASR_HOTWORD_LIST", "")
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
-    openai_model: str = os.getenv("OPENAI_MODEL", "deepseek-v4-pro")
-    openai_temperature: float = float(os.getenv("OPENAI_TEMPERATURE", "0.5"))
-    openai_thinking_type: str = os.getenv("OPENAI_THINKING_TYPE", "disabled")
+    tencent_secret_id: str = ""
+    tencent_secret_key: str = ""
+    tencent_app_id: str = ""
+    tencent_region: str = "ap-beijing"
+    tencent_engine_model_type: str = "16k_zh"
+    tencent_project_id: int = 0
+    tencent_hotword_id: str = ""
+    tencent_hotword_list: str = ""
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.deepseek.com"
+    openai_model: str = "deepseek-v4-pro"
+    openai_temperature: float = 0.5
+    openai_thinking_type: str = "disabled"
 
     def __post_init__(self) -> None:
+        self.tencent_secret_id = os.getenv("TENCENT_SECRET_ID", self.tencent_secret_id)
+        self.tencent_secret_key = os.getenv("TENCENT_SECRET_KEY", self.tencent_secret_key)
+        self.tencent_app_id = os.getenv("TENCENT_ASR_APP_ID", self.tencent_app_id)
+        self.tencent_region = os.getenv("TENCENT_ASR_REGION", self.tencent_region)
+        self.tencent_engine_model_type = os.getenv("TENCENT_ASR_ENGINE_MODEL_TYPE", self.tencent_engine_model_type)
+        self.tencent_project_id = int(os.getenv("TENCENT_ASR_PROJECT_ID", str(self.tencent_project_id or 0)) or 0)
+        self.tencent_hotword_id = os.getenv("TENCENT_ASR_HOTWORD_ID", self.tencent_hotword_id)
+        self.tencent_hotword_list = os.getenv("TENCENT_ASR_HOTWORD_LIST", self.tencent_hotword_list)
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", self.openai_api_key)
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL", self.openai_base_url)
+        self.openai_model = os.getenv("OPENAI_MODEL", self.openai_model)
+        self.openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", str(self.openai_temperature or 0.5)) or 0.5)
+        self.openai_thinking_type = os.getenv("OPENAI_THINKING_TYPE", self.openai_thinking_type)
+        default_wake_phrases = [
+            "小比小比",
+            "小比格",
+            "小比",
+            "小必",
+            "小币",
+            "小壁",
+            "小逼",
+            "小B",
+            "小b",
+            "比格",
+        ]
         self.wake_phrases = _parse_env_list(
-            os.getenv("VOICE_WAKE_PHRASES", os.getenv("VOICE_WAKE_PHRASE", "小比")),
-            ["小比"],
+            os.getenv("VOICE_WAKE_PHRASES", os.getenv("VOICE_WAKE_PHRASE", ",".join(default_wake_phrases))),
+            default_wake_phrases,
         )
         self.wake_phrases = sorted(set(self.wake_phrases), key=len, reverse=True)
-        self.wake_replacements = _parse_env_map(os.getenv("VOICE_WAKE_REPLACEMENTS", ""))
+        default_replacements = {
+            "小必": "小比",
+            "小币": "小比",
+            "小壁": "小比",
+            "小逼": "小比",
+            "小B": "小比",
+            "小b": "小比",
+            "比格": "小比",
+            "小比格": "小比",
+        }
+        self.wake_replacements = {**default_replacements, **_parse_env_map(os.getenv("VOICE_WAKE_REPLACEMENTS", ""))}
 
 
 class VoicePipeline:
     def __init__(self) -> None:
         self.settings = VoiceSettings()
 
+    def sdk_available(self) -> bool:
+        try:
+            from tencentcloud.asr.v20190614 import asr_client, models  # noqa: F401
+            from tencentcloud.common import credential  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
     def health(self, tool_definitions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         tools = tool_definitions or []
         return {
             "ok": True,
+            "tencent_sdk_available": self.sdk_available(),
             "tencent_configured": bool(self.settings.tencent_secret_id and self.settings.tencent_secret_key),
             "tencent_region": self.settings.tencent_region,
             "tencent_engine_model_type": self.settings.tencent_engine_model_type,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -16,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from .adapters.factory import build_adapter
 from .car_runtime import CarRuntimeRecovery
 from .config import PROJECT_ROOT, load_config, resolve_project_path
+from .cruise_planner import CruisePlanningError, plan_cruise_route
 from .database import DatabaseStore
 from .mcp_tools import McpToolService
 from .navigation import NavigationService
@@ -39,6 +43,8 @@ voice = VoicePipeline()
 mcp_tools = McpToolService(state, adapter)
 slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
+cruise_routes_lock = asyncio.Lock()
+CRUISE_ROUTES_FILE = PROJECT_ROOT / "data" / "cruise_routes.json"
 
 
 async def maybe_execute_llm_tool(parsed_output: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -59,6 +65,36 @@ async def maybe_execute_llm_tool(parsed_output: dict[str, Any] | None) -> dict[s
         )
 
     raise ValueError(f"Unsupported tool requested by LLM: {tool_name}")
+
+
+def _read_local_cruise_routes() -> list[dict[str, Any]]:
+    if not CRUISE_ROUTES_FILE.exists():
+        return []
+    try:
+        data = json.loads(CRUISE_ROUTES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _write_local_cruise_routes(routes: list[dict[str, Any]]) -> None:
+    CRUISE_ROUTES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CRUISE_ROUTES_FILE.write_text(json.dumps(routes, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _normalize_cruise_route_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()[:80] or "巡航路线"
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    route_id = str(payload.get("id") or route.get("id") or f"cruise-{uuid.uuid4().hex[:10]}")[:64]
+    saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "id": route_id,
+        "name": name,
+        "description": str(payload.get("description") or "")[:240],
+        "type": "cruise_route",
+        "route": route,
+        "updated_at": saved_at,
+    }
 
 app = FastAPI(title="智能家居管家机器人平台", version="0.1.0")
 app.add_middleware(
@@ -122,6 +158,11 @@ async def control_page() -> FileResponse:
 @app.get("/navigation")
 async def navigation_page() -> FileResponse:
     return frontend_response("navigation.html")
+
+
+@app.get("/cruise")
+async def cruise_page() -> FileResponse:
+    return frontend_response("cruise.html")
 
 
 @app.get("/vision")
@@ -320,6 +361,7 @@ async def mcp_move_distance(payload: dict[str, Any]) -> dict[str, Any]:
 async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
     direction = str(payload.get("direction", "")).lower()
     speed = float(payload.get("speed", 0.16))
+    hold = bool(payload.get("hold") or payload.get("continuous"))
     pulse_ms = max(80, min(1000, int(payload.get("duration_ms", 260))))
     if direction not in {"forward", "backward", "left", "right", "stop"}:
         raise HTTPException(status_code=400, detail="Unsupported direction")
@@ -329,14 +371,17 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
                 result = await adapter.stop()
             else:
                 result = await adapter.manual_control(direction, speed)
-                await asyncio.sleep(pulse_ms / 1000)
-                result["stop"] = await adapter.stop()
-                result["pulse_ms"] = pulse_ms
+                if hold:
+                    result["hold"] = True
+                else:
+                    await asyncio.sleep(pulse_ms / 1000)
+                    result["stop"] = await adapter.stop()
+                    result["pulse_ms"] = pulse_ms
         await state.update_robot(
             connected=True,
-            mode="standby",
-            speed=0,
-            last_command=direction if direction == "stop" else f"{direction}_pulse",
+            mode="manual_hold" if hold and direction != "stop" else "standby",
+            speed=speed if hold and direction != "stop" else 0,
+            last_command=direction if direction == "stop" else (f"{direction}_hold" if hold else f"{direction}_pulse"),
             last_error=None,
         )
         return result
@@ -366,7 +411,7 @@ async def auxiliary_control(payload: dict[str, Any]) -> dict[str, Any]:
                     "tcp": fallback,
                 }
                 if not result["ok"]:
-                    raise RuntimeError("light control failed")
+                    result["warning"] = "light command was sent through all known paths, but no path confirmed delivery"
             elif not result.get("ok"):
                 raise RuntimeError(result.get("message") or result.get("stderr") or "voice control failed")
         else:
@@ -415,6 +460,57 @@ async def navigation_patrol(payload: dict[str, Any]) -> dict[str, Any]:
 async def navigation_stop() -> dict[str, Any]:
     await navigation.stop()
     return {"ok": True}
+
+
+@app.post("/api/cruise/plan")
+async def cruise_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(plan_cruise_route, payload)
+    except CruisePlanningError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("cruise plan failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/cruise/routes")
+async def cruise_routes() -> dict[str, Any]:
+    local_routes = await asyncio.to_thread(_read_local_cruise_routes)
+    cloud_routes = await asyncio.to_thread(database.list_cruise_routes)
+    merged: dict[str, dict[str, Any]] = {}
+    for route in local_routes + cloud_routes:
+        route_id = str(route.get("id") or "")
+        if route_id:
+            merged[route_id] = route
+    return {
+        "ok": True,
+        "routes": sorted(merged.values(), key=lambda item: str(item.get("updated_at", "")), reverse=True),
+        "storage": {
+            "local": str(CRUISE_ROUTES_FILE.relative_to(PROJECT_ROOT)),
+            "cloud_enabled": database.config.enabled,
+            "cloud_available": database.available,
+        },
+    }
+
+
+@app.post("/api/cruise/routes")
+async def save_cruise_route(payload: dict[str, Any]) -> dict[str, Any]:
+    route = _normalize_cruise_route_payload(payload)
+    async with cruise_routes_lock:
+        routes = await asyncio.to_thread(_read_local_cruise_routes)
+        routes = [item for item in routes if item.get("id") != route["id"]]
+        routes.insert(0, route)
+        await asyncio.to_thread(_write_local_cruise_routes, routes)
+        await asyncio.to_thread(database.save_cruise_route, route)
+    return {
+        "ok": True,
+        "route": route,
+        "storage": {
+            "local": str(CRUISE_ROUTES_FILE.relative_to(PROJECT_ROOT)),
+            "cloud_enabled": database.config.enabled,
+            "cloud_available": database.available,
+        },
+    }
 
 
 @app.get("/api/slam/status")

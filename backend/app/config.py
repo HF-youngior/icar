@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 DOTENV_PATH = PROJECT_ROOT / ".env"
+PARENT_DOTENV_PATH = PROJECT_ROOT.parent / ".env"
 
 
 @dataclass
@@ -142,6 +143,7 @@ def _load_dotenv(dotenv_path: Path) -> None:
 
 def load_config() -> AppConfig:
     _load_dotenv(DOTENV_PATH)
+    _load_dotenv(PARENT_DOTENV_PATH)
     default = _dataclass_to_dict(AppConfig())
     config_path = Path(os.getenv("ICAR_CONFIG", CONFIG_DIR / "app.example.json"))
     if config_path.exists():

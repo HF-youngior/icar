@@ -37,6 +37,14 @@ class TcpCarAdapterTest(unittest.TestCase):
         self.assertEqual(self.adapter._speed_percent(0.32), 100)
         self.assertEqual(self.adapter._speed_percent(160), 100)
 
+    def test_light_payloads_include_teacher_rgb_protocol_first(self) -> None:
+        frames = self.adapter._light_payloads(enabled=True, r=38, g=244, b=255)
+
+        self.assertEqual(frames[0], "$000508010100000F#")
+        self.assertEqual(frames[1], "$0105080101000010#")
+        self.assertIn("$0320080026F4FF44#", frames)
+        self.assertIn("$0130080026F4FF52#", frames)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <title>定点巡航 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css?v=cruise-v1" />
+  </head>
+  <body data-page="cruise">
+    <div class="app-shell">
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard"><span class="brand-mark">IC</span><span><strong>HomeBot</strong><small>智能家居管家机器人</small></span></a>
+        <nav class="rail-nav">
+          <a href="/dashboard">总览</a><a href="/control">遥控</a><a href="/navigation">导航</a><a class="active" href="/cruise">巡航</a><a href="/vision">视觉</a><a href="/alarms">告警</a><a href="/reports">报告</a>
+        </nav>
+        <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
+      </aside>
+      <main class="page">
+        <header class="page-head">
+          <div>
+            <p class="eyebrow">A* Point Cruise</p>
+            <h1>定点巡航</h1>
+            <p class="subhead" id="cruiseHeadline">遥控记录途经点，A* 自动规划相邻点之间的少转弯路线，并按设定次数循环巡航。</p>
+          </div>
+          <div class="connect-strip">
+            <input id="serverInput" value="" placeholder="ws://当前页面主机/ws" />
+            <button class="neon-btn primary" id="connectBtn">连接</button>
+            <button class="neon-btn ghost" id="disconnectBtn">断开</button>
+          </div>
+        </header>
+
+        <section class="cruise-layout">
+          <article class="panel glow-panel cruise-map-panel">
+            <div class="panel-title">
+              <h2>巡航网格</h2>
+              <p id="cruiseMapHint">当前位置从第一个途经点出发；保存 3 个以上途经点后即可规划巡航。</p>
+            </div>
+            <div class="cruise-toolbar">
+              <button class="neon-btn ghost active" id="cruiseSelectBtn">选择/移动点</button>
+              <button class="neon-btn ghost" id="cruiseObstacleBtn">障碍编辑</button>
+              <button class="neon-btn ghost" id="cruiseClearObstaclesBtn">清空障碍</button>
+              <button class="neon-btn ghost" id="cruiseResetPoseBtn">位置归零</button>
+            </div>
+            <div class="cruise-control-grid compact">
+              <label>网格列数<input id="cruiseGridWidthInput" type="number" min="12" max="160" step="4" value="48" /></label>
+              <label>网格行数<input id="cruiseGridHeightInput" type="number" min="8" max="160" step="4" value="32" /></label>
+            </div>
+            <div class="cruise-canvas-frame">
+              <canvas id="cruiseCanvas" width="980" height="680"></canvas>
+            </div>
+            <div class="coordinate-strip">
+              <span>当前估计：<strong id="cruisePoseText">--</strong></span>
+              <span>途经点：<strong id="cruiseWaypointCount">0</strong></span>
+              <span>路径：<strong id="cruisePlanSummary">未规划</strong></span>
+            </div>
+          </article>
+
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>遥控与标点</h2>
+              <p>移动到点位后保存途经点；开始巡航前请把小车放回第一个途经点。</p>
+            </div>
+            <div class="cruise-control-grid">
+              <label>速度<input id="cruiseSpeedInput" type="number" min="0.08" max="0.18" step="0.01" value="0.10" /></label>
+              <label>前进脉冲<input id="cruiseForwardMsInput" type="number" min="120" max="1200" step="20" value="420" /></label>
+              <label>转向脉冲<input id="cruiseTurnMsInput" type="number" min="120" max="1200" step="20" value="360" /></label>
+              <label>90度转向次数<input id="cruiseTurnPulsesInput" type="number" min="1" max="20" step="1" value="10" /></label>
+              <label>掉头次数<input id="cruiseTurnaroundPulsesInput" type="number" min="8" max="36" step="1" value="19" /></label>
+              <label>网格步长<input id="cruiseStepMetersInput" type="number" min="0.05" max="1" step="0.05" value="0.25" /></label>
+            </div>
+            <div class="cruise-dpad">
+              <button data-dir="forward">前</button>
+              <button data-dir="left">左</button>
+              <button class="stop" data-dir="stop">停</button>
+              <button data-dir="right">右</button>
+              <button data-dir="backward">后</button>
+            </div>
+            <div class="two-buttons">
+              <button class="neon-btn primary" id="cruiseSaveWaypointBtn">保存途经点</button>
+              <button class="neon-btn danger" id="estopBtn">急停</button>
+            </div>
+            <button class="neon-btn ghost wide" id="reconnectCarBtn">重连小车</button>
+          </article>
+
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>途经点</h2>
+              <p>可选择、删除、上移或下移；巡航按列表顺序执行，最后返回第一个点。</p>
+            </div>
+            <div class="cruise-waypoint-actions">
+              <button class="neon-btn ghost" id="cruiseMovePointUpBtn">上移</button>
+              <button class="neon-btn ghost" id="cruiseMovePointDownBtn">下移</button>
+              <button class="neon-btn ghost" id="cruiseDeletePointBtn">删除</button>
+              <button class="neon-btn ghost" id="cruiseClearPointsBtn">清空</button>
+            </div>
+            <div class="cruise-control-grid compact">
+              <label>途经点名称<input id="cruiseWaypointNameInput" placeholder="例如：书房" /></label>
+              <button class="neon-btn ghost" id="cruiseRenameWaypointBtn">修改名称</button>
+            </div>
+            <div class="cruise-waypoint-list" id="cruiseWaypointList"></div>
+          </article>
+
+          <article class="panel glow-panel">
+            <div class="panel-title">
+              <h2>巡航执行</h2>
+              <p id="cruiseStatusText">等待设置途经点。</p>
+            </div>
+            <div class="cruise-control-grid">
+              <label>路线名称<input id="cruiseRouteNameInput" placeholder="例如：路线1" value="路线1" /></label>
+              <label>选择路线
+                <select id="cruiseRouteSelect">
+                  <option value="">暂无保存路线</option>
+                </select>
+              </label>
+            </div>
+            <div class="two-buttons">
+              <button class="neon-btn ghost" id="cruiseSaveRouteBtn">保存路线</button>
+              <button class="neon-btn ghost" id="cruiseLoadRouteBtn">加载路线</button>
+            </div>
+            <div class="cruise-control-grid">
+              <label>停留秒数<input id="cruiseDwellInput" type="number" min="1" max="60" step="1" value="5" /></label>
+              <label>转弯惩罚<input id="cruiseTurnPenaltyInput" type="number" min="0" max="3" step="0.05" value="0.35" /></label>
+              <label>巡航模式
+                <select id="cruiseModeSelect">
+                  <option value="once">只巡航一次</option>
+                  <option value="repeat">巡航指定次数</option>
+                  <option value="loop">不断循环</option>
+                </select>
+              </label>
+              <label>次数<input id="cruiseRepeatInput" type="number" min="1" max="20" step="1" value="1" /></label>
+            </div>
+            <div class="two-buttons">
+              <button class="neon-btn primary" id="cruisePlanBtn">规划路线</button>
+              <button class="neon-btn primary" id="cruiseStartBtn">开始巡航</button>
+            </div>
+            <div class="two-buttons">
+              <button class="neon-btn ghost" id="cruisePauseBtn">暂停/继续</button>
+              <button class="neon-btn danger" id="cruiseStopBtn">停止巡航</button>
+            </div>
+            <pre id="cruiseCommandLog">暂无巡航日志</pre>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/js/app.js?v=cruise-v1"></script>
+  </body>
+</html>
