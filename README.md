@@ -187,6 +187,7 @@ git@github.com:HF-youngior/icar.git
 | --- | --- |
 | `docs/car-connection.md` | 小车连接、NoMachine、SSH、热点、有线和 VMware 测试说明 |
 | `docs/database.md` | 腾讯云 MySQL 环境变量、建表和连通性检查 |
+| `docs/cloud-ci.md` | 腾讯云数据库、腾讯云语音识别、大模型和 GitHub Actions CI/CD 说明 |
 | `docs/interface.md` | WebSocket 和 HTTP 接口 |
 | `docs/test-plan.md` | 功能测试和真车联调测试清单 |
 | `vision/README.md` | YOLOv5 训练、推理和 Jetson 部署说明 |

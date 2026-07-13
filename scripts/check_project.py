@@ -14,6 +14,8 @@ def load_json(path: Path) -> None:
 def main() -> None:
     required = [
         ROOT / "README.md",
+        ROOT / ".env.example",
+        ROOT / ".github" / "workflows" / "ci.yml",
         ROOT / "backend" / "requirements.txt",
         ROOT / "backend" / "app" / "main.py",
         ROOT / "frontend" / "index.html",
@@ -28,6 +30,7 @@ def main() -> None:
         ROOT / "config" / "points.json",
         ROOT / "config" / "routes.json",
         ROOT / "docs" / "database.md",
+        ROOT / "docs" / "cloud-ci.md",
         ROOT / "docs" / "car-connection.md",
         ROOT / "scripts" / "db_check.py",
         ROOT / "scripts" / "check_car_connection.ps1",
