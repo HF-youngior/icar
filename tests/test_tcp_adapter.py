@@ -23,6 +23,18 @@ class TcpCarAdapterTest(unittest.TestCase):
             ["$0116066464E5#", "$0115040620#"],
         )
 
+    def test_builtin_6000_uses_native_turn_direction(self) -> None:
+        adapter = TcpCarAdapter(CarConfig(port=6000))
+
+        self.assertEqual(
+            adapter._command_payloads("left", speed=0.32),
+            ["$0116066464E5#", "$011504051F#"],
+        )
+        self.assertEqual(
+            adapter._command_payloads("right", speed=0.32),
+            ["$0116066464E5#", "$0115040620#"],
+        )
+
     def test_rejects_unsupported_command(self) -> None:
         with self.assertRaises(ValueError):
             self.adapter._command_payloads("dance")

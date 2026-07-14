@@ -139,6 +139,13 @@ class SlamRuntimeManager:
         maps = self._wait_for_saved_map(safe_name)
         ok = any(item["name"] == f"{safe_name}.yaml" for item in maps)
         if not ok:
+            fallback_command = f"timeout 30s ros2 run nav2_map_server map_saver_cli -f {shlex.quote(container_path)}"
+            fallback = self._docker_exec(f"{self._ros_setup()} && {fallback_command}", timeout_sec=36, tolerate=True)
+            result.stdout = "\n".join(part for part in (result.stdout, fallback.stdout) if part)
+            result.stderr = "\n".join(part for part in (result.stderr, fallback.stderr) if part)
+            maps = self._wait_for_saved_map(safe_name)
+            ok = any(item["name"] == f"{safe_name}.yaml" for item in maps)
+        if not ok:
             self._copy_saved_map_from_container(safe_name)
             maps = self._wait_for_saved_map(safe_name)
             ok = any(item["name"] == f"{safe_name}.yaml" for item in maps)
@@ -355,7 +362,7 @@ class SlamRuntimeManager:
     def _wait_for_saved_map(self, safe_name: str) -> list[dict[str, Any]]:
         expected = f"{safe_name}.yaml"
         maps: list[dict[str, Any]] = []
-        for _ in range(6):
+        for _ in range(20):
             maps = self.list_maps(refresh_meta=False)
             if any(item["name"] == expected for item in maps):
                 return maps
@@ -458,8 +465,17 @@ sys.exit(2)
 
     def list_maps(self, refresh_meta: bool = True) -> list[dict[str, Any]]:
         self._sync_container_maps_to_host()
-        command = f"find {shlex.quote(self.remote_maps_dir)} -maxdepth 1 -type f -name '*.yaml' -printf '%f|%s|%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null || true"
-        result = self._ssh(command, timeout_sec=6)
+        container_names = self._container_map_names()
+        result = self._list_host_maps()
+        host_names = {
+            self._sanitize_map_file(line.strip().split("|")[0])
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
+        for name in container_names - host_names:
+            self._copy_saved_map_from_container(self._sanitize_map_stem(name))
+        if container_names - host_names:
+            result = self._list_host_maps()
         maps: list[dict[str, Any]] = []
         for line in result.stdout.splitlines():
             parts = line.strip().split("|")
@@ -479,6 +495,24 @@ sys.exit(2)
                     item["error"] = str(exc)
             maps.append(item)
         return maps
+
+    def _list_host_maps(self) -> CommandResult:
+        command = f"find {shlex.quote(self.remote_maps_dir)} -maxdepth 1 -type f -name '*.yaml' -printf '%f|%s|%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null || true"
+        return self._ssh(command, timeout_sec=6)
+
+    def _container_map_names(self) -> set[str]:
+        if not self._container_running():
+            return set()
+        result = self._docker_exec(
+            f"find {shlex.quote(self.container_maps_dir)} -maxdepth 1 -type f -name '*.yaml' -printf '%f\\n' 2>/dev/null || true",
+            timeout_sec=6,
+            tolerate=True,
+        )
+        return {
+            self._sanitize_map_file(line.strip())
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
 
     def _sync_container_maps_to_host(self) -> CommandResult | None:
         if not self._container_running():
@@ -570,7 +604,16 @@ done
 docker run -dit $args "$image" bash -lc 'sleep infinity' >/dev/null
 echo "$name created"
 """
-        result = self._ssh(script, timeout_sec=20)
+        result = self._ssh(script, timeout_sec=20, tolerate=True)
+        output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+        accepted = (
+            result.ok
+            or f"{self.container_name} already running" in output
+            or f"{self.container_name} started" in output
+            or f"{self.container_name} created" in output
+        )
+        if not accepted:
+            raise RuntimeError(output or f"failed to ensure {self.container_name}: {result.returncode}")
         return {"ok": True, "stdout": result.stdout.strip()}
 
     def restart_container(self) -> dict[str, Any]:
@@ -592,7 +635,7 @@ echo "$name created"
                 timeout_sec=4,
                 tolerate=True,
             ).stdout.strip()
-            return output == "true"
+            return any(line.strip() == "true" for line in output.splitlines())
         except Exception:
             return False
 

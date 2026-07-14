@@ -454,10 +454,14 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
     direction = str(payload.get("direction", "")).lower()
     speed = float(payload.get("speed", 0.16))
     hold = bool(payload.get("hold") or payload.get("continuous"))
+    precision = bool(payload.get("precision") or payload.get("source") == "cruise")
     pulse_ms = max(80, min(1000, int(payload.get("duration_ms", 260))))
     request_generation = manual_emergency_generation
     if direction not in {"forward", "backward", "left", "right", "stop"}:
         raise HTTPException(status_code=400, detail="Unsupported direction")
+    if direction in {"left", "right"} and not precision:
+        hold = False
+        pulse_ms = min(pulse_ms, 500)
     try:
         async with manual_control_lock:
             if direction != "stop" and (
@@ -488,6 +492,27 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
             last_error=None,
         )
         return result
+    except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
+        if hold and direction != "stop":
+            message = str(exc) or exc.__class__.__name__
+            logger.warning("manual hold refresh skipped: direction=%s speed=%s error=%s", direction, speed, message)
+            await state.update_robot(
+                connected=True,
+                mode="manual_hold",
+                speed=speed,
+                last_command=f"{direction}_hold_retry",
+                last_error=message,
+            )
+            return {
+                "ok": False,
+                "transient": True,
+                "direction": direction,
+                "message": message,
+            }
+        logger.exception("manual control failed: direction=%s speed=%s", direction, speed)
+        await state.update_robot(connected=False, mode="offline", last_error=str(exc))
+        await state.add_alarm("manual_control", "warning", f"控制指令失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("manual control failed: direction=%s speed=%s", direction, speed)
         await state.update_robot(connected=False, mode="offline", last_error=str(exc))

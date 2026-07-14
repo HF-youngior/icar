@@ -772,6 +772,7 @@ const GESTURE_COMMANDS = {
 };
 
 const GESTURE_REPEAT_INTERVAL_MS = 220;
+const TURN_PULSE_MS = 450;
 
 function renderGestureStatus() {
   if (page !== "vision") return;
@@ -1081,11 +1082,12 @@ async function sendGestureCommand(gesture) {
   }
   try {
     state.gesture.activeDirection = command.direction;
+    const turnPulse = command.direction === "left" || command.direction === "right";
     await postJson("/api/control/manual", {
       direction: command.direction,
       speed: gestureSpeed(),
-      duration_ms: 0,
-      hold: true,
+      duration_ms: turnPulse ? TURN_PULSE_MS : 0,
+      hold: !turnPulse,
     });
   } catch (error) {
     console.warn("gesture command failed", error);
@@ -1193,6 +1195,10 @@ function startManualHold(direction) {
     sendStopNow(true);
     return;
   }
+  if (direction === "left" || direction === "right") {
+    sendManualPulse(direction, TURN_PULSE_MS);
+    return;
+  }
   clearManualHold();
   state.manualDirection = direction;
   sendManualHoldRefresh(direction);
@@ -1200,7 +1206,7 @@ function startManualHold(direction) {
     if (state.manualDirection === direction) {
       sendManualHoldRefresh(direction);
     }
-  }, 220);
+  }, 330);
 }
 
 async function sendManualHoldRefresh(direction) {
@@ -1220,7 +1226,7 @@ function stopManualHold(direction) {
   }
 }
 
-function sendManualPulse(direction) {
+function sendManualPulse(direction, durationMs = 260) {
   if (!direction) return;
   if (direction === "stop") {
     sendStopNow();
@@ -1228,12 +1234,12 @@ function sendManualPulse(direction) {
   }
   clearManualHold();
   state.manualDirection = direction;
-  sendManualHttp(direction);
+  sendManualHttp(direction, { durationMs });
   state.manualStopTimer = window.setTimeout(() => {
     if (state.manualDirection === direction) {
       sendStopNow();
     }
-  }, 260);
+  }, durationMs);
 }
 
 function bindManualButton(button) {
@@ -2618,6 +2624,8 @@ async function sendCruiseManual(direction) {
     direction,
     speed: cruiseSpeed(),
     duration_ms: duration,
+    precision: true,
+    source: "cruise",
   });
   updateCruisePoseByDirection(direction);
   cruiseLog(`遥控 ${direction} · ${duration}ms`);
@@ -2635,6 +2643,8 @@ async function sendCruiseContinuousTurn(direction, totalMs) {
       speed: cruiseSpeed(),
       duration_ms: 0,
       hold: true,
+      precision: true,
+      source: "cruise",
     });
     await waitCruise(220);
   }

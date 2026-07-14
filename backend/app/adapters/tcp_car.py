@@ -83,10 +83,18 @@ class TcpCarAdapter(CarAdapter):
             "stop": 0,
             "forward": 1,
             "backward": 2,
-            "left": 6,
-            "right": 5,
             "emergency_stop": 7,
         }
+        if self.config.port == 6000:
+            direction_map.update({
+                "left": 5,
+                "right": 6,
+            })
+        else:
+            direction_map.update({
+                "left": 6,
+                "right": 5,
+            })
         if key not in direction_map:
             raise ValueError(f"Unsupported TCP command: {key}")
         movement = self._encode_frame("15", self._hex(direction_map[key]))
