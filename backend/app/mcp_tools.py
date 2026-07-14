@@ -5,24 +5,30 @@ import time
 from typing import Any
 
 from .adapters.base import CarAdapter
+from .car_runtime import CarRuntimeRecovery
 from .state import StateHub
 from .tts import TencentTtsService
 
 
 class McpToolService:
     fixed_speed_mps = 0.2
+    fixed_turn_speed = 0.16
+    turn_degrees_per_pulse = 90
+    turn_pulse_ms = 260
+    turn_interval_ms = 300
     command_interval_sec = 0.18
     prepared_voices: dict[str, dict[str, str]] = {
         "wake_ack": {"text": "我在", "description": "用户只是在呼唤小比时使用。"},
-        "unknown": {"text": "不知道", "description": "用户要求超出当前能力范围时使用。"},
+        "unknown": {"text": "我不会", "description": "用户要求超出当前能力范围时使用。"},
         "ok": {"text": "好的", "description": "已经收到用户请求时使用。"},
         "done": {"text": "已完成", "description": "动作或任务完成后使用。"},
     }
 
-    def __init__(self, state: StateHub, adapter: CarAdapter, tts: TencentTtsService) -> None:
+    def __init__(self, state: StateHub, adapter: CarAdapter, tts: TencentTtsService, runtime: CarRuntimeRecovery) -> None:
         self.state = state
         self.adapter = adapter
         self.tts = tts
+        self.runtime = runtime
 
     def tool_definitions(self) -> list[dict[str, Any]]:
         return [
@@ -48,10 +54,34 @@ class McpToolService:
                 },
             },
             {
+                "name": "turn_degrees",
+                "description": (
+                    "Turn the car in place left or right. The LLM provides a desired angle in degrees; "
+                    "the tool layer converts it into 90-degree turn pulses and sends low-level left/right commands."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "direction": {
+                            "type": "string",
+                            "enum": ["left", "right"],
+                            "description": "Turn direction.",
+                        },
+                        "degrees": {
+                            "type": "integer",
+                            "enum": [90, 180, 270, 360],
+                            "description": "Turn angle. Must be one of 90, 180, 270, or 360 degrees.",
+                        },
+                    },
+                    "required": ["direction", "degrees"],
+                },
+            },
+            {
                 "name": "speak",
                 "description": (
-                    "Reply to the user by voice. Use mode='preset' whenever the intended reply can be covered "
-                    "by one of the prepared voices; use mode='tts' only when a prepared voice is not suitable."
+                    "Play a spoken reply on the car speaker. Use mode='preset' whenever the intended reply can be "
+                    "covered by one of the prepared voices; use mode='tts' only when custom words are needed. "
+                    "This tool should be used for verbal acknowledgements and spoken answers, not for buzzer cues."
                 ),
                 "prepared_voices": self.prepared_voices,
                 "input_schema": {
@@ -60,7 +90,7 @@ class McpToolService:
                         "mode": {
                             "type": "string",
                             "enum": ["preset", "tts"],
-                            "description": "preset uses an existing prepared voice; tts creates a Tencent TTS task.",
+                            "description": "preset plays an existing prepared phrase; tts speaks custom text on the car.",
                         },
                         "preset_key": {
                             "type": "string",
@@ -75,6 +105,62 @@ class McpToolService:
                         },
                     },
                     "required": ["mode"],
+                },
+            },
+            {
+                "name": "set_light",
+                "description": (
+                    "Turn the car's visible light on or off. Use this when the user asks for lights, visual "
+                    "signalling, or a non-audio acknowledgement. This does not move the car and should not be "
+                    "used as an emergency stop."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "true turns the light on; false turns it off.",
+                        },
+                        "r": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255,
+                            "description": "Red channel for the light color when enabled.",
+                        },
+                        "g": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255,
+                            "description": "Green channel for the light color when enabled.",
+                        },
+                        "b": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255,
+                            "description": "Blue channel for the light color when enabled.",
+                        },
+                    },
+                    "required": ["enabled"],
+                },
+            },
+            {
+                "name": "beep",
+                "description": (
+                    "Play a short buzzer cue on the car. Use this for brief confirmations, attention cues, "
+                    "warnings, or helping the user locate the car. Do not use this for spoken replies; use "
+                    "speak when words are needed."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "duration_ms": {
+                            "type": "integer",
+                            "minimum": 50,
+                            "maximum": 2550,
+                            "description": "How long the buzzer should sound, in milliseconds. Use 150-300ms for a normal acknowledgement.",
+                        }
+                    },
+                    "required": [],
                 },
             },
             {
@@ -155,6 +241,71 @@ class McpToolService:
             "duration_sec": round(duration_sec, 3),
         }
 
+    async def turn_degrees(self, direction: str, degrees: int) -> dict[str, Any]:
+        direction = str(direction).lower().strip()
+        degrees = int(degrees)
+        if direction not in {"left", "right"}:
+            raise ValueError("direction must be 'left' or 'right'")
+        if degrees <= 0:
+            raise ValueError("degrees must be greater than 0")
+        if degrees % self.turn_degrees_per_pulse != 0:
+            raise ValueError(f"degrees must be a multiple of {self.turn_degrees_per_pulse}")
+        if degrees > 360:
+            raise ValueError("degrees is too large for a single tool call")
+
+        pulse_count = degrees // self.turn_degrees_per_pulse
+        await self.state.update_robot(
+            connected=True,
+            mode="tool_turn",
+            speed=self.fixed_turn_speed,
+            target=f"{direction}:{degrees}deg",
+            last_command=f"turn_degrees:{direction}:{degrees}",
+            last_error=None,
+        )
+
+        try:
+            for index in range(pulse_count):
+                await self.adapter.manual_control(direction, self.fixed_turn_speed)
+                await asyncio.sleep(self.turn_pulse_ms / 1000)
+                await self.adapter.stop()
+                if index < pulse_count - 1:
+                    await asyncio.sleep(self.turn_interval_ms / 1000)
+        except Exception:
+            await self.state.update_robot(speed=0, mode="offline")
+            raise
+
+        await self.state.update_robot(
+            speed=0,
+            mode="standby",
+            target=None,
+            last_command="stop",
+        )
+        await self.state.add_report(
+            title=f"转向工具 {direction}",
+            summary=f"按 {self.turn_degrees_per_pulse} 度步进原地{('左' if direction == 'left' else '右')}转 {degrees} 度。",
+            details={
+                "tool": "turn_degrees",
+                "direction": direction,
+                "degrees": degrees,
+                "degrees_per_pulse": self.turn_degrees_per_pulse,
+                "pulse_count": pulse_count,
+                "speed": self.fixed_turn_speed,
+                "pulse_ms": self.turn_pulse_ms,
+                "interval_ms": self.turn_interval_ms,
+            },
+        )
+        return {
+            "ok": True,
+            "tool": "turn_degrees",
+            "direction": direction,
+            "degrees": degrees,
+            "degrees_per_pulse": self.turn_degrees_per_pulse,
+            "pulse_count": pulse_count,
+            "speed": self.fixed_turn_speed,
+            "pulse_ms": self.turn_pulse_ms,
+            "interval_ms": self.turn_interval_ms,
+        }
+
     async def speak(self, mode: str, text: str = "", preset_key: str = "") -> dict[str, Any]:
         normalized_mode = str(mode).lower().strip()
         normalized_text = str(text).strip()
@@ -165,9 +316,10 @@ class McpToolService:
             if not voice:
                 raise ValueError("preset_key must reference a prepared voice")
             spoken_text = normalized_text or voice["text"]
+            playback = await self._play_voice(spoken_text)
             await self.state.add_report(
-                title="Prepared voice selected",
-                summary=f"Prepared voice selected: {normalized_preset_key} / {voice['text']}",
+                title="Prepared voice played on car",
+                summary=f"Prepared voice played: {normalized_preset_key} / {spoken_text}",
                 details={
                     "tool": "speak",
                     "mode": "preset",
@@ -175,24 +327,115 @@ class McpToolService:
                     "text": spoken_text,
                     "prepared_text": voice["text"],
                     "description": voice["description"],
+                    "playback": playback,
                 },
             )
             return {
-                "ok": True,
+                "ok": playback.get("ok", False),
                 "tool": "speak",
                 "mode": "preset",
                 "preset_key": normalized_preset_key,
                 "text": spoken_text,
                 "prepared_text": voice["text"],
+                "playback": playback,
             }
 
         if normalized_mode == "tts":
-            result = await self.speak_text(normalized_text)
-            result["tool"] = "speak"
-            result["mode"] = "tts"
-            return result
+            if not normalized_text:
+                raise ValueError("text must not be empty when mode is tts")
+            playback = await self._play_voice(normalized_text)
+            await self.state.add_report(
+                title="Custom voice played on car",
+                summary=f"Car voice requested: {normalized_text}",
+                details={
+                    "tool": "speak",
+                    "mode": "tts",
+                    "text": normalized_text,
+                    "playback": playback,
+                },
+            )
+            return {
+                "ok": playback.get("ok", False),
+                "tool": "speak",
+                "mode": "tts",
+                "text": normalized_text,
+                "playback": playback,
+            }
 
         raise ValueError("mode must be 'preset' or 'tts'")
+
+    async def set_light(self, enabled: bool, r: int = 38, g: int = 244, b: int = 255) -> dict[str, Any]:
+        is_enabled = self._bool_value(enabled)
+        red = self._clamp_byte(r if is_enabled else 0)
+        green = self._clamp_byte(g if is_enabled else 0)
+        blue = self._clamp_byte(b if is_enabled else 0)
+
+        if self.adapter.name == "tcp":
+            runtime_result = await asyncio.to_thread(
+                self.runtime.control_light,
+                enabled=is_enabled,
+                r=red,
+                g=green,
+                b=blue,
+            )
+            tcp_result = await self.adapter.auxiliary_control(
+                "light",
+                enabled=is_enabled,
+                r=red,
+                g=green,
+                b=blue,
+            )
+            result: dict[str, Any] = {
+                "ok": bool(runtime_result.get("ok")) or bool(tcp_result.get("ok")),
+                "tool": "set_light",
+                "adapter": "ssh-rosmaster+tcp",
+                "enabled": is_enabled,
+                "rgb": [red, green, blue],
+                "runtime": runtime_result,
+                "tcp": tcp_result,
+            }
+            if not result["ok"]:
+                result["warning"] = "light command was sent through all known paths, but no path confirmed delivery"
+        else:
+            adapter_result = await self.adapter.auxiliary_control(
+                "light",
+                enabled=is_enabled,
+                r=red,
+                g=green,
+                b=blue,
+            )
+            result = {
+                "ok": adapter_result.get("ok", False),
+                "tool": "set_light",
+                "enabled": is_enabled,
+                "rgb": [red, green, blue],
+                "adapter_result": adapter_result,
+            }
+
+        await self.state.update_robot(connected=True, last_command="aux:light", last_error=None)
+        await self.state.add_report(
+            title="Light command sent",
+            summary=f"Car light {'on' if is_enabled else 'off'}",
+            details=result,
+        )
+        return result
+
+    async def beep(self, duration_ms: int = 260) -> dict[str, Any]:
+        duration = max(50, min(2550, int(duration_ms or 260)))
+        adapter_result = await self.adapter.auxiliary_control("buzzer", duration_ms=duration)
+        result = {
+            "ok": adapter_result.get("ok", False),
+            "tool": "beep",
+            "duration_ms": duration,
+            "adapter_result": adapter_result,
+        }
+        await self.state.update_robot(connected=True, last_command="aux:buzzer", last_error=None)
+        await self.state.add_report(
+            title="Buzzer cue sent",
+            summary=f"Car buzzer cue sent for {duration} ms",
+            details=result,
+        )
+        return result
 
     async def speak_text(self, text: str) -> dict[str, Any]:
         normalized_text = str(text).strip()
@@ -220,3 +463,16 @@ class McpToolService:
             "text": normalized_text,
             "callback_url": task.get("callback_url"),
         }
+
+    async def _play_voice(self, text: str) -> dict[str, Any]:
+        if self.adapter.name == "tcp":
+            return await asyncio.to_thread(self.runtime.play_voice, text=text)
+        return await self.adapter.auxiliary_control("voice", text=text, volume_percent=85)
+
+    def _clamp_byte(self, value: Any) -> int:
+        return max(0, min(255, int(value)))
+
+    def _bool_value(self, value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        return bool(value)

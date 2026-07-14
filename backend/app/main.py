@@ -44,7 +44,7 @@ sensors = SensorService(config, state)
 vision = VisionService(config, state)
 voice = VoicePipeline()
 tts = TencentTtsService()
-mcp_tools = McpToolService(state, adapter, tts)
+mcp_tools = McpToolService(state, adapter, tts, runtime)
 voice_records = VoiceInteractionStore()
 slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
@@ -65,6 +65,11 @@ async def execute_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> di
             arguments.get("direction", ""),
             float(arguments.get("meters", 0)),
         )
+    if tool_name == "turn_degrees":
+        return await mcp_tools.turn_degrees(
+            arguments.get("direction", ""),
+            int(arguments.get("degrees", 0)),
+        )
     if tool_name == "speak":
         return await mcp_tools.speak(
             arguments.get("mode", ""),
@@ -73,6 +78,15 @@ async def execute_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> di
         )
     if tool_name == "speak_text":
         return await mcp_tools.speak_text(arguments.get("text", ""))
+    if tool_name == "set_light":
+        return await mcp_tools.set_light(
+            arguments.get("enabled", False),
+            r=int(arguments.get("r", 38)),
+            g=int(arguments.get("g", 244)),
+            b=int(arguments.get("b", 255)),
+        )
+    if tool_name == "beep":
+        return await mcp_tools.beep(int(arguments.get("duration_ms", 260)))
 
     raise ValueError(f"Unsupported tool requested by LLM: {tool_name}")
 
@@ -425,6 +439,16 @@ async def mcp_move_distance(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/mcp/tools/turn-degrees")
+async def mcp_turn_degrees(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.turn_degrees(payload.get("direction", ""), int(payload.get("degrees", 0)))
+    except Exception as exc:
+        logger.exception("mcp turn_degrees failed")
+        await state.add_alarm("mcp_tool", "warning", f"工具转向失败：{exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/mcp/tools/speak")
 async def mcp_speak(payload: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -446,6 +470,31 @@ async def mcp_speak_text(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("mcp speak_text failed")
         await state.add_alarm("mcp_tool", "warning", f"TTS task submit failed: {exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/set-light")
+async def mcp_set_light(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.set_light(
+            payload.get("enabled", False),
+            r=int(payload.get("r", 38)),
+            g=int(payload.get("g", 244)),
+            b=int(payload.get("b", 255)),
+        )
+    except Exception as exc:
+        logger.exception("mcp set_light failed")
+        await state.add_alarm("mcp_tool", "warning", f"Light tool failed: {exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/beep")
+async def mcp_beep(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.beep(int(payload.get("duration_ms", 260)))
+    except Exception as exc:
+        logger.exception("mcp beep failed")
+        await state.add_alarm("mcp_tool", "warning", f"Buzzer tool failed: {exc}", "backend")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -882,7 +931,7 @@ async def voice_process(request: Request) -> dict[str, Any]:
                 tool_executions.append(fallback_voice)
         elif result.get("wake_phrase_matched") and result.get("llm_enabled"):
             tool_executions.append(await mcp_tools.speak("preset", preset_key="unknown"))
-            result["llm_output"] = "不知道"
+            result["llm_output"] = "我不会"
         elif result.get("wake_phrase_matched") and not result.get("llm_enabled"):
             tool_executions.append(await mcp_tools.speak("preset", preset_key="wake_ack"))
             result["llm_output"] = "我在"

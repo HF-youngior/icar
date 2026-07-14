@@ -50,6 +50,7 @@ class VoiceSettings:
     openai_model: str = "deepseek-v4-pro"
     openai_temperature: float = 0.5
     openai_thinking_type: str = "disabled"
+    voice_prompt_mode: str = "production"
 
     def __post_init__(self) -> None:
         self.tencent_secret_id = os.getenv("TENCENT_SECRET_ID", self.tencent_secret_id)
@@ -65,6 +66,9 @@ class VoiceSettings:
         self.openai_model = os.getenv("OPENAI_MODEL", self.openai_model)
         self.openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", str(self.openai_temperature or 0.5)) or 0.5)
         self.openai_thinking_type = os.getenv("OPENAI_THINKING_TYPE", self.openai_thinking_type)
+        self.voice_prompt_mode = os.getenv("VOICE_PROMPT_MODE", self.voice_prompt_mode).strip().lower() or "production"
+        if self.voice_prompt_mode not in {"production", "voice_mining"}:
+            self.voice_prompt_mode = "production"
         default_wake_phrases = [
             "小比小比",
             "小比格",
@@ -124,6 +128,7 @@ class VoicePipeline:
             "llm_base_url": self.settings.openai_base_url,
             "llm_temperature": self.settings.openai_temperature,
             "llm_thinking_type": self.settings.openai_thinking_type,
+            "voice_prompt_mode": self.settings.voice_prompt_mode,
             "tool_names": [tool.get("name", "") for tool in tools],
         }
 
@@ -221,12 +226,24 @@ class VoicePipeline:
             return True, command_text or normalized_text, phrase, normalized_text
         return False, normalized_text, "", normalized_text
 
+    def _tool_description_for_prompt(self, tool: dict[str, Any]) -> str:
+        description = str(tool.get("description", ""))
+        if tool.get("name") != "speak":
+            return description
+        if self.settings.voice_prompt_mode == "voice_mining":
+            return (
+                "Reply to the user by voice. This is a reply-collection mode: first choose the most natural and lively "
+                "short answer that XiaoBi would really say. If that answer exactly matches one prepared voice text, "
+                "you may use mode='preset'; otherwise prefer mode='tts' so the team can review candidate fixed replies later."
+            )
+        return description
+
     def build_llm_prompt(self, llm_input: str, tool_definitions: list[dict[str, Any]] | None = None) -> str:
         tools = tool_definitions or []
         tool_lines = []
         for tool in tools:
             name = tool.get("name", "")
-            description = tool.get("description", "")
+            description = self._tool_description_for_prompt(tool)
             schema = json.dumps(tool.get("input_schema", {}), ensure_ascii=False)
             prepared_voices = tool.get("prepared_voices")
             prepared_text = ""
@@ -237,18 +254,38 @@ class VoicePipeline:
         return (
             "你是家庭机器人“小比”的语音控制层。你的名字叫小比，寓意是像一只比格一样活泼可靠。\n"
             "输入内容已经经过语音识别和关键词纠偏，但没有剥离唤醒词；用户可能会说“小比”“小比小比”“比格”“小比格”来称呼你。\n"
-            "你需要理解完整用户原话，不要因为出现唤醒词就忽略后面的命令。\n"
+            "你需要理解完整用户原话，不要因为出现唤醒词就忽略后面的命令；唤醒词是对你的称呼，不是噪声。\n"
             f"当前用户原话: {llm_input}\n"
             "当前可用工具列表:\n"
             f"{tools_text}\n"
             "回复规则:\n"
             "1. 只返回一个 JSON 对象，不要输出 Markdown，不要解释过程。\n"
-            "2. 每次都必须包含 intent_summary，使用很短的中文概括你理解到的意图，例如“唤醒确认”“向前移动2米”“能力外请求”。\n"
-            "3. 每次都必须包含 reply，reply 是给用户听到的简短中文回复。\n"
-            "4. 每次都必须通过 tool_calls 至少安排一次语音回复。若准备好的语音能覆盖你的回复，优先调用 speak 且 mode=preset；只有准备好的语音不合适时才调用 speak 且 mode=tts。\n"
-            "5. 如果要控制小车，也把 move_distance 放入 tool_calls。工具调用顺序按数组顺序执行。\n"
-            "6. 如果用户只是呼唤你，没有明确命令，使用 prepared voice wake_ack，reply 写“我在”，intent_summary 写“唤醒确认”。\n"
-            "7. 当前能力范围主要是语音回复和前进/后退固定距离；超出能力范围时，优先使用 prepared voice unknown，reply 写“不知道”。\n"
+            "2. 每次都必须包含 intent_summary，给系统记账用，必须简短、精确、可复用，例如“唤醒确认”“前进2米”“左转90度”“陪伴问答”“能力外命令”。\n"
+            "3. 每次都必须包含 reply，reply 是给用户听到的回复，应短、自然、口语化。\n"
+            "4. 每次都必须通过 tool_calls 至少安排一次语音回复。默认优先复用准备好的语音；只有准备好的语音无法自然表达时，才使用 tts 现场合成。\n"
+            "5. 如果既要回复又要控制小车，请同时给出 speak 和对应的运动工具；推荐先 speak，再执行运动工具。\n"
+            "6. 命令型请求必须有明确 MCP 工具才执行；不要编造未提供的工具能力。当前可执行命令只有：语音回复、前进固定距离、后退固定距离、原地左转/右转 90/180/270/360 度。\n"
+            "7. 如果用户只是呼唤你，没有明确命令，使用 prepared voice wake_ack，reply 写“我在”，intent_summary 写“唤醒确认”。\n"
+            "8. 如果用户提出家居陪伴机器人定位内的非命令型请求，例如讲笑话、简单聊天、问时间或天气，可以直接用自然语言回复；不要调用不存在的搜索、天气或时间工具，也不要假装已经联网查询实时信息。\n"
+            "9. 如果用户提出命令型请求但没有对应 MCP，例如开空调、开灯、去未提供的地点、复杂避障，优先使用 prepared voice unknown，reply 写“我不会”，intent_summary 写“能力外命令”。\n"
+            "10. 如果用户说“前进两米”“往前两米”“向前两米”，应理解为 move_distance(direction='forward', meters=2)。如果用户说“后退一米”，应理解为 move_distance(direction='backward', meters=1)。\n"
+            "11. 如果用户说“左转九十度”“向右转180度”，应理解为 turn_degrees(direction='left'|'right', degrees=90|180)。只有角度明确且可按 90 度步进时才执行；“转一下”“随便转”这类模糊命令不要执行。\n"
+            "12. reply 要符合“小比”的角色气质：像一只比格一样活泼、利落、靠谱；但不要太长，不要一次说很多句。\n"
+            "示例1:\n"
+            "用户原话: 小比小比\n"
+            "输出: {\"intent\":\"chat\",\"intent_summary\":\"唤醒确认\",\"reply\":\"我在\",\"tool_calls\":[{\"name\":\"speak\",\"arguments\":{\"mode\":\"preset\",\"preset_key\":\"wake_ack\",\"text\":\"我在\"}}]}\n"
+            "示例2:\n"
+            "用户原话: 小比小比，前进两米\n"
+            "输出: {\"intent\":\"tool_call\",\"intent_summary\":\"前进2米\",\"reply\":\"好的\",\"tool_calls\":[{\"name\":\"speak\",\"arguments\":{\"mode\":\"preset\",\"preset_key\":\"ok\",\"text\":\"好的\"}},{\"name\":\"move_distance\",\"arguments\":{\"direction\":\"forward\",\"meters\":2}}]}\n"
+            "示例3:\n"
+            "用户原话: 小比，左转九十度\n"
+            "输出: {\"intent\":\"tool_call\",\"intent_summary\":\"左转90度\",\"reply\":\"好的\",\"tool_calls\":[{\"name\":\"speak\",\"arguments\":{\"mode\":\"preset\",\"preset_key\":\"ok\",\"text\":\"好的\"}},{\"name\":\"turn_degrees\",\"arguments\":{\"direction\":\"left\",\"degrees\":90}}]}\n"
+            "示例4:\n"
+            "用户原话: 小比，给我讲个笑话\n"
+            "输出: {\"intent\":\"chat\",\"intent_summary\":\"陪伴问答\",\"reply\":\"当然啦，小比讲一个短的：为什么扫地机器人不迷路？因为它总会把事情扫清楚。\",\"tool_calls\":[{\"name\":\"speak\",\"arguments\":{\"mode\":\"tts\",\"text\":\"当然啦，小比讲一个短的：为什么扫地机器人不迷路？因为它总会把事情扫清楚。\"}}]}\n"
+            "示例5:\n"
+            "用户原话: 小比，帮我打开空调\n"
+            "输出: {\"intent\":\"unknown\",\"intent_summary\":\"能力外命令\",\"reply\":\"我不会\",\"tool_calls\":[{\"name\":\"speak\",\"arguments\":{\"mode\":\"preset\",\"preset_key\":\"unknown\",\"text\":\"我不会\"}}]}\n"
             "输出 JSON 格式固定为:\n"
             "{\"intent\":\"tool_call|chat|unknown\",\"intent_summary\":\"简短意图\",\"reply\":\"简短中文回复\",\"tool_calls\":[{\"name\":\"工具名\",\"arguments\":{...}}]}"
         )
@@ -268,7 +305,7 @@ class VoicePipeline:
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是家庭机器人小比的语音控制层。严格返回 JSON，不要输出 Markdown。",
+                    "content": "你是家庭机器人小比的语音控制层。严格遵守用户消息里的输出协议，只返回 JSON 对象。",
                 },
                 {"role": "user", "content": prompt},
             ],

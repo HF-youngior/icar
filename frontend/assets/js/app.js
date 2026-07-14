@@ -84,6 +84,7 @@ const state = {
     audioContext: null,
     source: null,
     processor: null,
+    sink: null,
     chunks: [],
     recording: false,
     uploading: false,
@@ -1926,30 +1927,38 @@ async function startVoiceListening() {
       video: false,
     });
     const audioContext = new AudioCtx();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const sink = audioContext.createGain();
+    sink.gain.value = 0;
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    processor.connect(sink);
+    sink.connect(audioContext.destination);
     processor.onaudioprocess = handleVoiceAudio;
 
     state.voice.stream = stream;
     state.voice.audioContext = audioContext;
     state.voice.source = source;
     state.voice.processor = processor;
+    state.voice.sink = sink;
     state.voice.listening = true;
     state.voice.transcript = "";
-    state.voice.llmOutput = "";
+    state.voice.llmOutput = "本地监听已启动，等待说话。";
     state.voice.level = 0;
     setVoiceStatus("listening");
   } catch (error) {
     console.warn("voice start failed", error);
-    state.voice.llmOutput = "麦克风启动失败，请检查浏览器权限。";
+    state.voice.llmOutput = `麦克风启动失败：${error.message || error}`;
     setVoiceStatus("error");
   }
 }
 
 function stopVoiceListening() {
   finalizeVoiceUtterance(true);
+  state.voice.sink?.disconnect();
   state.voice.processor?.disconnect();
   state.voice.source?.disconnect();
   state.voice.audioContext?.close();
@@ -1958,6 +1967,7 @@ function stopVoiceListening() {
   state.voice.audioContext = null;
   state.voice.source = null;
   state.voice.processor = null;
+  state.voice.sink = null;
   state.voice.listening = false;
   state.voice.recording = false;
   state.voice.uploading = false;
