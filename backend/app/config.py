@@ -68,6 +68,13 @@ class VisionConfig:
     hazard_data: str = ""
     hazard_conf: float = 0.25
     hazard_labels: list[str] = field(default_factory=lambda: ["smoke", "fire"])
+    backend_yolo_enabled: bool = False
+    backend_yolo_root: str = ""
+    backend_yolo_weights: str = ""
+    backend_yolo_data: str = ""
+    backend_yolo_conf: float = 0.25
+    backend_yolo_labels: list[str] = field(default_factory=list)
+    backend_preprocess: str = "enhance"
 
 
 @dataclass
@@ -82,7 +89,7 @@ class AppConfig:
     captures_dir: str = "data/captures"
     sensor_tick_sec: float = 1.5
     navigation_tick_sec: float = 0.8
-    vision_tick_sec: float = 3.0
+    vision_tick_sec: float = 1.0
 
 
 def _deep_update(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -126,7 +133,7 @@ def _from_dict(data: dict[str, Any]) -> AppConfig:
         captures_dir=data.get("captures_dir", "data/captures"),
         sensor_tick_sec=float(data.get("sensor_tick_sec", 1.5)),
         navigation_tick_sec=float(data.get("navigation_tick_sec", 0.8)),
-        vision_tick_sec=float(data.get("vision_tick_sec", 3.0)),
+        vision_tick_sec=float(data.get("vision_tick_sec", 1.0)),
     )
 
 
@@ -177,6 +184,23 @@ def load_config() -> AppConfig:
     hazard_labels = os.getenv("ICAR_HAZARD_LABELS")
     if hazard_labels:
         default["vision"]["hazard_labels"] = [item.strip().lower() for item in hazard_labels.split(",") if item.strip()]
+    default["vision"]["backend_yolo_enabled"] = os.getenv(
+        "ICAR_BACKEND_YOLO_ENABLED",
+        str(default["vision"]["backend_yolo_enabled"]),
+    ).lower() in {"1", "true", "yes", "on"}
+    default["vision"]["backend_yolo_root"] = os.getenv("ICAR_BACKEND_YOLO_ROOT", default["vision"]["backend_yolo_root"])
+    default["vision"]["backend_yolo_weights"] = os.getenv("ICAR_BACKEND_YOLO_WEIGHTS", default["vision"]["backend_yolo_weights"])
+    default["vision"]["backend_yolo_data"] = os.getenv("ICAR_BACKEND_YOLO_DATA", default["vision"]["backend_yolo_data"])
+    default["vision"]["backend_yolo_conf"] = float(os.getenv("ICAR_BACKEND_YOLO_CONF", default["vision"]["backend_yolo_conf"]))
+    backend_yolo_labels = os.getenv("ICAR_BACKEND_YOLO_LABELS")
+    if backend_yolo_labels:
+        default["vision"]["backend_yolo_labels"] = [
+            item.strip().lower() for item in backend_yolo_labels.split(",") if item.strip()
+        ]
+    default["vision"]["backend_preprocess"] = os.getenv(
+        "ICAR_BACKEND_PREPROCESS",
+        default["vision"]["backend_preprocess"],
+    )
     default["vision_tick_sec"] = float(os.getenv("ICAR_VISION_TICK_SEC", default["vision_tick_sec"]))
     if os.getenv("ICAR_DB_HOST"):
         default["database"]["enabled"] = True

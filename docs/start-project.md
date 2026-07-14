@@ -192,7 +192,16 @@ export ICAR_VISION_MODE=remote
 export ICAR_VISION_HOST=192.168.137.173
 export ICAR_VISION_PORT=8765
 export ICAR_VISION_STREAM_URL='http://192.168.137.173:8080/?action=stream'
-export ICAR_VISION_TICK_SEC=1.5
+export ICAR_VISION_TICK_SEC=1.0
+export ICAR_BACKEND_YOLO_ENABLED=true
+export ICAR_BACKEND_YOLO_ROOT=third_party/yolov5-7.0
+export ICAR_BACKEND_YOLO_WEIGHTS=vision/weights/yolov5s.pt
+export ICAR_BACKEND_YOLO_DATA=third_party/yolov5-7.0/data/coco128.yaml
+export ICAR_BACKEND_PREPROCESS=enhance
+export ICAR_HAZARD_VISION_ENABLED=true
+export ICAR_HAZARD_YOLO_ROOT=third_party/yolov5-7.0
+export ICAR_HAZARD_WEIGHTS=vision/weights/best.pt
+export ICAR_HAZARD_LABELS=smoke,fire
 ```
 
 启动后端：

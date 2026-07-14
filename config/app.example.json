@@ -45,7 +45,14 @@
     "hazard_weights": "",
     "hazard_data": "",
     "hazard_conf": 0.25,
-    "hazard_labels": ["smoke", "fire"]
+    "hazard_labels": ["smoke", "fire"],
+    "backend_yolo_enabled": false,
+    "backend_yolo_root": "",
+    "backend_yolo_weights": "",
+    "backend_yolo_data": "",
+    "backend_yolo_conf": 0.25,
+    "backend_yolo_labels": [],
+    "backend_preprocess": "enhance"
   },
   "points_file": "config/points.json",
   "routes_file": "config/routes.json",
@@ -53,5 +60,5 @@
   "captures_dir": "data/captures",
   "sensor_tick_sec": 1.5,
   "navigation_tick_sec": 0.8,
-  "vision_tick_sec": 3.0
+  "vision_tick_sec": 1.0
 }

@@ -426,14 +426,45 @@ function annotatedVisionStreamUrl(targets = selectedVisionTargets()) {
   return `/api/vision/annotated-stream?${query.toString()}`;
 }
 
-function showAnnotatedVisionStream(targets = selectedVisionTargets()) {
+function showBackendHazardVisionStream() {
   const image = $("visionImage");
   if (!image) return;
   stopGestureControl();
   state.camera.active = false;
   state.camera.currentUrl = "";
-  image.onload = () => setText("cameraStatus", "YOLO 带框视频已连接");
-  image.onerror = () => setText("cameraStatus", "YOLO 带框视频不可用，请检查小车 8765 服务");
+  const hazardStatus = state.snapshot.vision_control?.backend_hazard || {};
+  const preprocess = hazardStatus.preprocess || "none";
+  image.onload = () => setText("cameraStatus", `后端烟雾/火灾带框视频已连接 · 预处理 ${preprocess}`);
+  image.onerror = () => setText("cameraStatus", "后端烟雾/火灾带框视频不可用，请检查 best.pt、视频流地址和后端日志");
+  image.src = withCacheBust("/api/vision/hazard-stream");
+}
+
+function showAnnotatedVisionStream(targets = selectedVisionTargets()) {
+  const image = $("visionImage");
+  if (!image) return;
+  if ((state.visionControl.mode || "normal") === "hazard") {
+    showBackendHazardVisionStream();
+    return;
+  }
+  stopGestureControl();
+  state.camera.active = false;
+  state.camera.currentUrl = "";
+  const backendStatus = state.snapshot.vision_control?.backend_yolo || {};
+  const preprocess = backendStatus.preprocess || "none";
+  const backendReady = !!backendStatus.available;
+  const enabledButFailed = backendStatus.enabled && !backendStatus.available;
+  image.onload = () => setText(
+    "cameraStatus",
+    backendReady
+      ? `后端 YOLO 带框视频已连接 · 预处理 ${preprocess}`
+      : "远程 YOLO 带框视频已连接",
+  );
+  image.onerror = () => setText(
+    "cameraStatus",
+    enabledButFailed
+      ? `后端 YOLO 加载失败：${backendStatus.error || "未知错误"}`
+      : "YOLO 带框视频不可用，请检查后端 YOLO 配置或小车 8765 服务",
+  );
   image.src = withCacheBust(annotatedVisionStreamUrl(targets));
 }
 
@@ -671,6 +702,7 @@ function populateVisionModeOptions() {
       { id: "normal", label: "普通检测模式", enabled: true },
       { id: "travel", label: "旅游安防模式", enabled: true },
       { id: "care", label: "看护检测模式", enabled: true },
+      { id: "hazard", label: "火灾烟雾测试模式", enabled: true },
       { id: "search", label: "搜索模式", enabled: true },
     ];
   select.innerHTML = modes.map((mode) => (
@@ -725,6 +757,7 @@ function visionModeLabel() {
     normal: "普通检测模式",
     travel: "旅游安防模式",
     care: "看护检测模式",
+    hazard: "火灾烟雾测试模式",
     search: "搜索模式",
   }[state.visionControl.mode] || "普通检测模式";
 }
@@ -733,6 +766,7 @@ function visionModeDescription() {
   const mode = state.visionControl.mode || "normal";
   if (mode === "travel") return "旅游安防模式：固定检测人员，检测到人员时记录告警";
   if (mode === "care") return "看护检测模式：固定检测人员，连续疑似摔倒时记录告警";
+  if (mode === "hazard") return "火灾烟雾测试模式：只运行后端烟雾/火灾模型，命中后记录危险告警";
   if (mode === "search") return "搜索模式：可多选目标，检测到任意一个目标时生成报告";
   return "普通检测模式：检测全部类别，只记录检测事件，不触发告警";
 }
@@ -791,6 +825,7 @@ function selectedVisionTargets() {
 function selectedVisionTargetLabels() {
   if ((state.visionControl.mode || "normal") === "travel") return ["人员、烟雾、火灾"];
   if ((state.visionControl.mode || "normal") === "care") return ["人员姿态、烟雾、火灾"];
+  if ((state.visionControl.mode || "normal") === "hazard") return ["烟雾、火灾"];
   if (!visionModeNeedsTargets()) return ["全部类别"];
   const select = $("visionTargetSelect");
   const labels = select
@@ -969,7 +1004,7 @@ const TURN_PULSE_MS = 450;
 const SLAM_MANUAL_PULSE_MS = 500;
 
 function isGesturePage() {
-  return page === "control" || page === "vision";
+  return page === "control";
 }
 
 function renderGestureStatus() {

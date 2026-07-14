@@ -1194,6 +1194,12 @@ pre#cruiseCommandLog {
 
 .vision-camera-toolbar {
   grid-template-columns: minmax(220px, 1fr) repeat(4, auto);
+  align-items: stretch;
+}
+
+.vision-camera-toolbar .neon-btn {
+  min-width: 92px;
+  white-space: nowrap;
 }
 
 .vision-action-grid {
@@ -1319,11 +1325,11 @@ pre#cruiseCommandLog {
   }
 
   .vision-camera-toolbar {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(86px, auto));
   }
 
   .vision-camera-toolbar select {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 }
 

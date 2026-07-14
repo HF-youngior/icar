@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import AppConfig
-from .hazard_vision import BackendHazardDetector
+from .hazard_vision import BackendHazardDetector, BackendYoloDetector
 from .state import StateHub
 
 
@@ -19,6 +19,7 @@ class VisionService:
         "normal": {"label": "普通检测模式", "description": "只记录检测事件，不触发告警。"},
         "travel": {"label": "旅游安防模式", "description": "家中无人时使用，检测到人员就告警。"},
         "care": {"label": "看护检测模式", "description": "检测人员姿态，连续疑似摔倒时告警。"},
+        "hazard": {"label": "火灾烟雾测试模式", "description": "只运行后端烟雾/火灾模型，命中后触发告警。"},
         "search": {"label": "搜索模式", "description": "检测到选定目标时生成报告。"},
     }
 
@@ -44,17 +45,24 @@ class VisionService:
         self.state = state
         self._task: asyncio.Task[None] | None = None
         self.auxiliary_callback: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
+        self.object_detector = BackendYoloDetector(config)
         self.hazard_detector = BackendHazardDetector(config)
         self._target_order = list(self.TARGETS)
         self._target_index = 0
         self._last_detection_signature: tuple[Any, ...] | None = None
         self._last_hazard_signature: tuple[Any, ...] | None = None
         self._travel_person_alarm_active = False
+        self._active_hazard_labels: set[str] = set()
+        self._active_hazard_alarm_ids: dict[str, str] = {}
+        self._hazard_buzzer_task: asyncio.Task[None] | None = None
         self._fall_candidate_frames = 0
         self._fall_baseline_height: float | None = None
         self._fall_alarm_active = False
 
     def available_targets(self) -> list[dict[str, str]]:
+        backend_targets = self.object_detector.available_targets()
+        if backend_targets:
+            return backend_targets
         remote_targets = self._remote_targets()
         if remote_targets:
             return remote_targets
@@ -78,6 +86,7 @@ class VisionService:
             "service_url": self._service_base_url() if self._remote_enabled() else "",
             "annotated_stream_url": self.annotated_stream_proxy_url(),
             "modes": self.available_modes(),
+            "backend_yolo": self.object_detector.status(),
             "backend_hazard": self.hazard_detector.status(),
         }
 
@@ -106,6 +115,7 @@ class VisionService:
         self._last_detection_signature = None
         self._last_hazard_signature = None
         self._travel_person_alarm_active = False
+        self._reset_hazard_alarm_state()
         self._reset_fall_state()
         await self.state.update_vision_control(
             running=True,
@@ -124,12 +134,17 @@ class VisionService:
         self._last_detection_signature = None
         self._last_hazard_signature = None
         self._travel_person_alarm_active = False
+        self._reset_hazard_alarm_state()
         self._reset_fall_state()
         if task is not None:
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
+                pass
+            except Exception:
+                # The detection loop may currently be blocked on a failing camera/YOLO
+                # request. Stop should still be idempotent from the UI's point of view.
                 pass
         await self.state.update_vision_control(running=False)
         return self.status()
@@ -146,7 +161,8 @@ class VisionService:
         event = await self._build_detection_event(targets, mode)
         await self._record_detection_event(event)
         await self._update_fall_detection(event)
-        await self._detect_and_record_backend_hazard(event["mode"], changed_only=False)
+        if self._normalize_mode(event["mode"]) != "hazard":
+            await self._detect_and_record_backend_hazard(event["mode"], changed_only=False)
         self._last_detection_signature = self._event_signature(event)
         return event
 
@@ -157,7 +173,8 @@ class VisionService:
         event["changed"] = changed
         await self._update_fall_detection(event)
         recorded = await self._update_travel_person_alarm(event)
-        await self._detect_and_record_backend_hazard(event["mode"], changed_only=True)
+        if self._normalize_mode(event["mode"]) != "hazard":
+            await self._detect_and_record_backend_hazard(event["mode"], changed_only=True)
         if changed and not recorded:
             await self._record_detection_event(event)
         if changed:
@@ -168,11 +185,27 @@ class VisionService:
         mode_id = self._normalize_mode(mode or self.state.vision_control.get("mode"))
         raw_targets = self.state.vision_control.get("targets") if targets is None else targets
         selected = self._normalize_targets(raw_targets, mode_id)
+        if mode_id == "hazard":
+            return await self._build_backend_hazard_event(mode_id, selected)
+        backend_event = await self._detect_backend_object(selected)
+        if backend_event is not None:
+            backend_event["mode"] = mode_id
+            return backend_event
         remote_event = await self._detect_remote(selected)
         if remote_event is not None:
             remote_event["mode"] = mode_id
             return remote_event
 
+        if self.config.vision.mode != "simulated":
+            return self._clear_object_event(
+                mode_id,
+                selected,
+                "vision_unavailable",
+                "No backend or remote YOLO result is available",
+            )
+        return self._build_simulated_event(selected, mode_id)
+
+    def _build_simulated_event(self, selected: list[str], mode_id: str) -> dict[str, Any]:
         base = self._next_target(selected)
         return {
             **base,
@@ -190,11 +223,98 @@ class VisionService:
             "mode": mode_id,
         }
 
+    async def _detect_backend_object(self, selected: list[str]) -> dict[str, Any] | None:
+        if not self.object_detector.available:
+            return None
+        try:
+            event = await asyncio.to_thread(self.object_detector.detect, self._stream_url(), selected)
+        except Exception as exc:
+            return self._clear_object_event(
+                self._normalize_mode(self.state.vision_control.get("mode")),
+                selected,
+                "backend_yolov5s",
+                str(exc),
+            )
+        if event is None:
+            return self._clear_object_event("", selected, "backend_yolov5s")
+        event["stream_url"] = self._stream_url()
+        event["target_filter"] = selected
+        return event
+
+    def _clear_object_event(
+        self,
+        mode_id: str,
+        selected: list[str],
+        source: str,
+        error: str = "",
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "detections": [],
+            "backend_model": source == "backend_yolov5s",
+            "backend_model_kind": "object",
+        }
+        if error:
+            metadata["error"] = error
+        event = {
+            "label": "clear",
+            "label_zh": "未发现异常",
+            "confidence": 0.0,
+            "bbox": [0, 0, 0, 0],
+            "risk": "normal",
+            "image_url": "",
+            "source": source,
+            "stream_url": self._stream_url(),
+            "target_filter": selected,
+            "metadata": metadata,
+        }
+        if mode_id:
+            event["mode"] = mode_id
+        return event
+
+    def backend_annotated_jpeg(self, targets: Iterable[str] | None = None) -> bytes:
+        selected = self._normalize_targets(targets, self.state.vision_control.get("mode"))
+        include_hazard = self.hazard_detector.runner if self.hazard_detector.available else None
+        return self.object_detector.annotate_jpeg(self._stream_url(), selected, include_hazards=include_hazard)
+
+    async def _build_backend_hazard_event(self, mode_id: str, selected: list[str]) -> dict[str, Any]:
+        try:
+            hazard_event = await asyncio.to_thread(self.hazard_detector.detect, self._stream_url())
+        except Exception as exc:
+            return self._clear_backend_hazard_event(mode_id, selected, str(exc))
+        if hazard_event is None:
+            return self._clear_backend_hazard_event(mode_id, selected)
+        hazard_event["mode"] = mode_id
+        hazard_event["stream_url"] = self._stream_url()
+        hazard_event["target_filter"] = selected
+        return hazard_event
+
+    def _clear_backend_hazard_event(self, mode_id: str, selected: list[str], error: str = "") -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "detections": [],
+            "hazard_test": True,
+        }
+        if error:
+            metadata["error"] = error
+        return {
+            "label": "clear",
+            "label_zh": "未发现异常",
+            "confidence": 0.0,
+            "bbox": [0, 0, 0, 0],
+            "risk": "normal",
+            "image_url": "",
+            "source": "backend_hazard_yolo",
+            "stream_url": self._stream_url(),
+            "target_filter": selected,
+            "mode": mode_id,
+            "metadata": metadata,
+        }
+
     async def _record_detection_event(self, event: dict[str, Any]) -> None:
         await self.state.add_vision_event(event)
         mode_id = self._normalize_mode(event.get("mode"))
         mode_label = self.MODES[mode_id]["label"]
         labels = self._detected_labels(event)
+        await self._update_hazard_presence(mode_id, labels)
         await self._record_hazard_alarm(event, mode_id, mode_label, labels)
         if mode_id == "travel" and "person" in labels and not self._travel_person_alarm_active:
             self._travel_person_alarm_active = True
@@ -246,7 +366,7 @@ class VisionService:
 
     async def _detect_and_record_backend_hazard(self, mode: str, changed_only: bool) -> dict[str, Any] | None:
         mode_id = self._normalize_mode(mode)
-        if mode_id not in {"travel", "care"}:
+        if mode_id not in {"travel", "care", "hazard"}:
             return None
         try:
             hazard_event = await asyncio.to_thread(self.hazard_detector.detect, self._stream_url())
@@ -290,25 +410,88 @@ class VisionService:
         mode_label: str,
         labels: list[str],
     ) -> None:
-        if mode_id not in {"travel", "care"}:
+        if mode_id not in {"travel", "care", "hazard"}:
             return
         found = [label for label in labels if label in self.HAZARD_LABELS]
         if not found:
             return
-        label = found[0]
-        label_zh = self.HAZARD_LABELS[label]
-        await self.state.add_alarm(
-            alarm_type=f"vision_{label}",
-            level="danger",
-            message=f"{mode_label}检测到{label_zh}，请立即确认环境。",
-            source="vision",
-            metadata={
-                **event,
-                "vision_mode": mode_id,
-                "vision_mode_label": mode_label,
-                "hazard": label,
-            },
-        )
+        for label in found:
+            if label in self._active_hazard_labels:
+                continue
+            label_zh = self.HAZARD_LABELS[label]
+            alarm = await self.state.add_alarm(
+                alarm_type=f"vision_{label}",
+                level="danger",
+                message=f"{mode_label}检测到{label_zh}，请立即确认环境。",
+                source="vision",
+                metadata={
+                    **event,
+                    "vision_mode": mode_id,
+                    "vision_mode_label": mode_label,
+                    "hazard": label,
+                },
+            )
+            self._active_hazard_labels.add(label)
+            self._active_hazard_alarm_ids[label] = alarm["alarm_id"]
+            self._ensure_hazard_buzzer()
+
+    async def _update_hazard_presence(self, mode_id: str, labels: list[str]) -> None:
+        if mode_id not in {"travel", "care", "hazard"}:
+            return
+        found = {label for label in labels if label in self.HAZARD_LABELS}
+        for label in list(self._active_hazard_labels):
+            if label not in found:
+                self._active_hazard_labels.discard(label)
+                self._active_hazard_alarm_ids.pop(label, None)
+        if not self._active_hazard_alarm_ids:
+            await self._stop_hazard_buzzer()
+
+    def _ensure_hazard_buzzer(self) -> None:
+        if self.auxiliary_callback is None:
+            return
+        if self._hazard_buzzer_task is None or self._hazard_buzzer_task.done():
+            self._hazard_buzzer_task = asyncio.create_task(self._hazard_buzzer_loop())
+
+    async def _hazard_buzzer_loop(self) -> None:
+        try:
+            while self._active_hazard_alarm_ids:
+                try:
+                    if self.auxiliary_callback is not None:
+                        await self.auxiliary_callback("buzzer", {"duration_ms": 260})
+                except Exception:
+                    return
+                await asyncio.sleep(1.2)
+        except asyncio.CancelledError:
+            raise
+
+    async def _stop_hazard_buzzer(self) -> None:
+        task = self._hazard_buzzer_task
+        self._hazard_buzzer_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def handle_alarm_confirm(self, alarm: dict[str, Any]) -> None:
+        if alarm.get("type") not in {"vision_fire", "vision_smoke"}:
+            return
+        alarm_id = str(alarm.get("alarm_id") or "")
+        for label, active_alarm_id in list(self._active_hazard_alarm_ids.items()):
+            if active_alarm_id == alarm_id:
+                self._active_hazard_alarm_ids.pop(label, None)
+        if not self._active_hazard_alarm_ids:
+            await self._stop_hazard_buzzer()
+
+    def _reset_hazard_alarm_state(self) -> None:
+        self._active_hazard_labels.clear()
+        self._active_hazard_alarm_ids.clear()
+        task = self._hazard_buzzer_task
+        self._hazard_buzzer_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
     async def _update_fall_detection(self, event: dict[str, Any]) -> None:
         mode_id = self._normalize_mode(event.get("mode"))
@@ -457,8 +640,19 @@ class VisionService:
         mode_id = self._normalize_mode(mode or self.state.vision_control.get("mode"))
         if mode_id == "normal":
             return []
+        if mode_id == "hazard":
+            return [label for label in self.config.vision.hazard_labels if label in self.HAZARD_LABELS]
         if mode_id in {"travel", "care"}:
             return ["person", "smoke", "fire"]
+        backend_targets = self.object_detector.available_targets()
+        if backend_targets:
+            allowed_backend = {item["id"] for item in backend_targets}
+            normalized_backend: list[str] = []
+            for target in targets or []:
+                key = str(target).strip().lower()
+                if key in allowed_backend and key not in normalized_backend:
+                    normalized_backend.append(key)
+            return normalized_backend or ([backend_targets[0]["id"]] if mode_id == "search" else [])
         remote_targets = self._remote_targets() if self.config.vision.mode == "remote" else []
         if self.config.vision.mode == "remote":
             allowed_remote = {item["id"] for item in remote_targets}
