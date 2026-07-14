@@ -975,7 +975,9 @@ async def voice_process(request: Request) -> dict[str, Any]:
             tool_definitions=mcp_tools.tool_definitions(),
         )
         tool_executions: list[dict[str, Any]] = []
-        if result.get("wake_phrase_matched") and result.get("llm_parsed_output"):
+        if result.get("asr_empty"):
+            result["llm_output"] = "我没听清，请再说一遍。"
+        elif result.get("wake_phrase_matched") and result.get("llm_parsed_output"):
             tool_executions = await maybe_execute_llm_tools(result.get("llm_parsed_output"))
             fallback_voice = await ensure_voice_reply(result.get("llm_parsed_output"), tool_executions)
             if fallback_voice:
@@ -1000,6 +1002,7 @@ async def voice_process(request: Request) -> dict[str, Any]:
         result["voice_record"] = voice_records.append(
             {
                 "asr_raw_text": result.get("transcript", ""),
+                "asr_empty": result.get("asr_empty", False),
                 "normalized_text": result.get("normalized_transcript", ""),
                 "wake_phrase_matched": result.get("wake_phrase_matched", False),
                 "wake_phrase": result.get("wake_phrase", ""),

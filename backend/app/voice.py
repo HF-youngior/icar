@@ -203,9 +203,6 @@ class VoicePipeline:
         req.from_json_string(json.dumps(request_payload))
         resp = client.SentenceRecognition(req)
         data = json.loads(resp.to_json_string())
-        result = data.get("Result", "").strip()
-        if not result:
-            raise RuntimeError(f"Tencent ASR returned an empty transcript: {data}")
         return data
 
     def _normalize_transcript(self, transcript: str) -> str:
@@ -359,6 +356,8 @@ class VoicePipeline:
         llm_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         asr_payload = asr_data or {}
+        transcript = (transcript or "").strip()
+        asr_empty = not transcript
         wake_phrase_matched, command_text, matched_phrase, normalized_transcript = self._match_wake_phrase(transcript)
         llm_input = normalized_transcript if wake_phrase_matched else ""
         resolved_llm_data = llm_data if wake_phrase_matched and llm_data is not None else None
@@ -380,6 +379,7 @@ class VoicePipeline:
             }
         return {
             "ok": True,
+            "asr_empty": asr_empty,
             "transcript": transcript,
             "normalized_transcript": normalized_transcript,
             "wake_phrases": self.settings.wake_phrases,
