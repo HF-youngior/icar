@@ -1074,6 +1074,7 @@ async def vision_status() -> dict[str, Any]:
         "annotated_stream_url": status["annotated_stream_url"],
         "mode": status["mode"],
         "modes": status["modes"],
+        "backend_yolo": status["backend_yolo"],
         "backend_hazard": status["backend_hazard"],
         "options": vision.available_targets(),
     }
@@ -1097,6 +1098,28 @@ def vision_annotated_stream(targets: str | None = None) -> StreamingResponse:
     selected = [item.strip().lower() for item in (targets or "").split(",") if item.strip()]
     if not selected:
         selected = vision.status()["targets"]
+    if vision.object_detector.available:
+        def generate_backend():
+            while True:
+                try:
+                    jpeg = vision.backend_annotated_jpeg(selected)
+                    yield b"--frame\r\n"
+                    yield b"Content-Type: image/jpeg\r\n"
+                    yield f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                    yield jpeg
+                    yield b"\r\n"
+                except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                    logger.warning("backend object stream frame failed: %s", exc)
+                    time.sleep(0.2)
+                except Exception as exc:
+                    logger.warning("backend object stream failed: %s", exc)
+                    time.sleep(0.5)
+
+        return StreamingResponse(
+            generate_backend(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-cache"},
+        )
     target_url = vision.remote_annotated_stream_url(selected)
     try:
         request = UrlRequest(target_url, headers={"User-Agent": "iCar-Web/1.0"})
@@ -1119,6 +1142,38 @@ def vision_annotated_stream(targets: str | None = None) -> StreamingResponse:
 
     media_type = upstream.headers.get("Content-Type") or "multipart/x-mixed-replace; boundary=frame"
     return StreamingResponse(generate(), media_type=media_type, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/vision/hazard-stream")
+def vision_hazard_stream() -> StreamingResponse:
+    if not vision.hazard_detector.available:
+        status = vision.hazard_detector.status()
+        detail = status.get("error") or "Backend hazard detector is not available"
+        raise HTTPException(status_code=503, detail=str(detail))
+
+    stream_url = vision.status()["stream_url"]
+
+    def generate():
+        while True:
+            try:
+                jpeg = vision.hazard_detector.annotate_jpeg(stream_url)
+                yield b"--frame\r\n"
+                yield b"Content-Type: image/jpeg\r\n"
+                yield f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                yield jpeg
+                yield b"\r\n"
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                logger.warning("backend hazard stream frame failed: %s", exc)
+                time.sleep(0.2)
+            except Exception as exc:
+                logger.warning("backend hazard stream failed: %s", exc)
+                time.sleep(0.5)
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.post("/api/voice/process")
@@ -1244,6 +1299,7 @@ async def alarm_confirm(alarm_id: str, payload: dict[str, Any] | None = None) ->
     alarm = await state.confirm_alarm(alarm_id, (payload or {}).get("operator", "web"))
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
+    await vision.handle_alarm_confirm(alarm)
     return alarm
 
 

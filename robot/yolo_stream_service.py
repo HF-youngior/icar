@@ -69,9 +69,10 @@ class YoloRunner:
         frame = self._preprocess_frame(frame)
         frame_height, frame_width = frame.shape[:2]
         classes = self._target_classes(targets)
+        class_filter = classes if targets else None
         with self.lock:
-            self.detector.classes = classes or None
-            res_img, pixel_list = self._detect_frame(frame, classes or None)
+            self.detector.classes = class_filter
+            res_img, pixel_list = self._detect_frame(frame, class_filter)
         image_url = self._encode_image_url(res_img)
         if not pixel_list:
             return {
@@ -111,9 +112,10 @@ class YoloRunner:
     def annotate_jpeg(self, frame: np.ndarray, targets: list[str]) -> bytes:
         frame = self._preprocess_frame(frame)
         classes = self._target_classes(targets)
+        class_filter = classes if targets else None
         with self.lock:
-            self.detector.classes = classes or None
-            res_img, _ = self._detect_frame(frame, classes or None)
+            self.detector.classes = class_filter
+            res_img, _ = self._detect_frame(frame, class_filter)
         ok, encoded = cv2.imencode(".jpg", res_img, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
         if not ok:
             raise ValueError("Failed to encode annotated frame")
@@ -133,8 +135,8 @@ class YoloRunner:
         if self.preprocess == "none":
             return frame
         if self.preprocess == "enhance":
-            enhanced = self._clahe_luma(frame, clip_limit=2.0, tile_grid_size=(8, 8))
-            return self._unsharp_mask(enhanced, amount=0.35)
+            enhanced = self._clahe_luma(frame, clip_limit=1.25, tile_grid_size=(8, 8))
+            return self._unsharp_mask(enhanced, amount=0.12)
         if self.preprocess == "lowlight":
             enhanced = self._clahe_luma(frame, clip_limit=3.0, tile_grid_size=(8, 8))
             return cv2.convertScaleAbs(enhanced, alpha=1.12, beta=12)
@@ -220,7 +222,7 @@ class MjpegReader:
         buffer = bytearray()
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
-            chunk = response.read(4096)
+            chunk = self._read_available(response)
             if not chunk:
                 break
             buffer.extend(chunk)
@@ -235,6 +237,12 @@ class MjpegReader:
             if start > 0:
                 del buffer[:start]
         raise TimeoutError("Timed out waiting for one JPEG frame from MJPEG stream")
+
+    def _read_available(self, response) -> bytes:
+        reader = getattr(response, "read1", None)
+        if callable(reader):
+            return reader(4096)
+        return response.read(1)
 
     def _extract_jpeg(self, data: bytes) -> np.ndarray:
         start = data.find(b"\xff\xd8")
@@ -349,7 +357,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read one frame from the car MJPEG stream and run YOLO detection.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--stream-url", default="http://127.0.0.1:6500/video_feed")
+    parser.add_argument("--stream-url", default="http://127.0.0.1:8080/?action=stream")
     parser.add_argument("--yolo-root", default=str(default_yolo_root()))
     parser.add_argument("--weights", default="/home/jetson/Yolov5ptFile/yolov5s.pt")
     parser.add_argument("--data", default="/home/jetson/yolov5-7.0/data/coco128.yaml")
