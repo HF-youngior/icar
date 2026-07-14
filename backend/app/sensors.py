@@ -22,7 +22,6 @@ class SensorService:
             "gas": {"warning": 0.35, "danger": 0.65},
             "pm25": {"warning": 75, "danger": 115},
         }
-        self._active_alarm_keys: set[str] = set()
 
     def start_background(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -45,7 +44,6 @@ class SensorService:
         for name, value in values.items():
             level = self._level(name, value)
             await self.state.update_sensor(name, {"value": value, "level": level})
-            await self._maybe_alarm(name, value, level)
 
     def _level(self, name: str, value: float) -> str:
         threshold = self.thresholds[name]
@@ -58,21 +56,4 @@ class SensorService:
         if value >= threshold.get("warning", float("inf")):
             return "warning"
         return "normal"
-
-    async def _maybe_alarm(self, name: str, value: float, level: str) -> None:
-        key = f"{name}:{level}"
-        if level == "normal":
-            self._active_alarm_keys = {item for item in self._active_alarm_keys if not item.startswith(f"{name}:")}
-            return
-        if key in self._active_alarm_keys:
-            return
-        self._active_alarm_keys.add(key)
-        labels = {item["name"]: item["label"] for item in self.state.sensors.values()}
-        await self.state.add_alarm(
-            alarm_type=f"sensor_{name}",
-            level=level,
-            message=f"{labels.get(name, name)}数据达到{level}级别：{value}",
-            source="sensor",
-            metadata={"sensor": name, "value": value},
-        )
 

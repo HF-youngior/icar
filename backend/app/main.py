@@ -609,6 +609,15 @@ async def auxiliary_control(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+async def _vision_auxiliary_callback(action: str, values: dict[str, Any]) -> dict[str, Any]:
+    result = await adapter.auxiliary_control(action, **values)
+    await state.update_robot(connected=True, last_command=f"vision_aux:{action}", last_error=None)
+    return result
+
+
+vision.auxiliary_callback = _vision_auxiliary_callback
+
+
 @app.post("/api/control/emergency-stop")
 async def emergency_stop(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     global manual_emergency_block_until, manual_emergency_generation
@@ -884,7 +893,8 @@ async def slam_stop() -> dict[str, Any]:
 
 @app.post("/api/vision/detect")
 async def vision_detect(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    return await vision.detect_once((payload or {}).get("targets"))
+    body = payload or {}
+    return await vision.detect_once(body.get("targets"), body.get("mode"))
 
 
 @app.get("/api/vision/status")
@@ -898,13 +908,18 @@ async def vision_status() -> dict[str, Any]:
         "stream_url": status["stream_url"],
         "backend_mode": status["backend_mode"],
         "service_url": status["service_url"],
+        "annotated_stream_url": status["annotated_stream_url"],
+        "mode": status["mode"],
+        "modes": status["modes"],
+        "backend_hazard": status["backend_hazard"],
         "options": vision.available_targets(),
     }
 
 
 @app.post("/api/vision/start")
 async def vision_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    status = await vision.start_detection((payload or {}).get("targets"))
+    body = payload or {}
+    status = await vision.start_detection(body.get("targets"), body.get("mode"))
     return {"ok": True, **status, "options": vision.available_targets()}
 
 
@@ -912,6 +927,35 @@ async def vision_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
 async def vision_stop() -> dict[str, Any]:
     status = await vision.stop_detection()
     return {"ok": True, **status, "options": vision.available_targets()}
+
+
+@app.get("/api/vision/annotated-stream")
+def vision_annotated_stream(targets: str | None = None) -> StreamingResponse:
+    selected = [item.strip().lower() for item in (targets or "").split(",") if item.strip()]
+    if not selected:
+        selected = vision.status()["targets"]
+    target_url = vision.remote_annotated_stream_url(selected)
+    try:
+        request = UrlRequest(target_url, headers={"User-Agent": "iCar-Web/1.0"})
+        upstream = urlopen(request, timeout=8)
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        logger.warning("annotated vision stream unavailable: %s -> %s", target_url, exc)
+        raise HTTPException(status_code=502, detail=f"Annotated vision stream unavailable: {target_url}") from exc
+
+    def generate():
+        try:
+            with upstream:
+                while True:
+                    chunk = upstream.read(8192)
+                    if not chunk:
+                        break
+                    yield chunk
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            logger.warning("annotated vision stream failed: %s -> %s", target_url, exc)
+            return
+
+    media_type = upstream.headers.get("Content-Type") or "multipart/x-mixed-replace; boundary=frame"
+    return StreamingResponse(generate(), media_type=media_type, headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/voice/process")

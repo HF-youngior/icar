@@ -62,6 +62,12 @@ class VisionConfig:
     health_path: str = "/health"
     stream_url: str = ""
     request_timeout_sec: float = 8.0
+    hazard_enabled: bool = False
+    hazard_yolo_root: str = ""
+    hazard_weights: str = ""
+    hazard_data: str = ""
+    hazard_conf: float = 0.25
+    hazard_labels: list[str] = field(default_factory=lambda: ["smoke", "fire"])
 
 
 @dataclass
@@ -76,7 +82,7 @@ class AppConfig:
     captures_dir: str = "data/captures"
     sensor_tick_sec: float = 1.5
     navigation_tick_sec: float = 0.8
-    vision_tick_sec: float = 5.0
+    vision_tick_sec: float = 3.0
 
 
 def _deep_update(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -120,7 +126,7 @@ def _from_dict(data: dict[str, Any]) -> AppConfig:
         captures_dir=data.get("captures_dir", "data/captures"),
         sensor_tick_sec=float(data.get("sensor_tick_sec", 1.5)),
         navigation_tick_sec=float(data.get("navigation_tick_sec", 0.8)),
-        vision_tick_sec=float(data.get("vision_tick_sec", 5.0)),
+        vision_tick_sec=float(data.get("vision_tick_sec", 3.0)),
     )
 
 
@@ -160,6 +166,17 @@ def load_config() -> AppConfig:
     default["vision"]["service_port"] = int(os.getenv("ICAR_VISION_PORT", default["vision"]["service_port"]))
     default["vision"]["service_base_url"] = os.getenv("ICAR_VISION_BASE_URL", default["vision"]["service_base_url"])
     default["vision"]["stream_url"] = os.getenv("ICAR_VISION_STREAM_URL", default["vision"]["stream_url"])
+    default["vision"]["hazard_enabled"] = os.getenv(
+        "ICAR_HAZARD_VISION_ENABLED",
+        str(default["vision"]["hazard_enabled"]),
+    ).lower() in {"1", "true", "yes", "on"}
+    default["vision"]["hazard_yolo_root"] = os.getenv("ICAR_HAZARD_YOLO_ROOT", default["vision"]["hazard_yolo_root"])
+    default["vision"]["hazard_weights"] = os.getenv("ICAR_HAZARD_WEIGHTS", default["vision"]["hazard_weights"])
+    default["vision"]["hazard_data"] = os.getenv("ICAR_HAZARD_DATA", default["vision"]["hazard_data"])
+    default["vision"]["hazard_conf"] = float(os.getenv("ICAR_HAZARD_CONF", default["vision"]["hazard_conf"]))
+    hazard_labels = os.getenv("ICAR_HAZARD_LABELS")
+    if hazard_labels:
+        default["vision"]["hazard_labels"] = [item.strip().lower() for item in hazard_labels.split(",") if item.strip()]
     default["vision_tick_sec"] = float(os.getenv("ICAR_VISION_TICK_SEC", default["vision_tick_sec"]))
     if os.getenv("ICAR_DB_HOST"):
         default["database"]["enabled"] = True
