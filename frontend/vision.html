@@ -33,8 +33,17 @@
               <button class="neon-btn ghost" id="cameraNextBtn">下一个</button>
               <button class="neon-btn ghost" id="cameraStopBtn">停止</button>
             </div>
-            <div class="video-frame vision-live-frame">
+            <div class="gesture-toolbar">
+              <button class="neon-btn primary" id="gestureToggleBtn">开启手势控制</button>
+              <label>速度<input id="gestureSpeedInput" type="number" min="0.08" max="0.16" step="0.01" value="0.10" /></label>
+            </div>
+            <div class="gesture-pills">
+              <span>握拳 停止</span><span>1 后退</span><span>2 左转</span><span>3 右转</span><span>五指 前进</span>
+            </div>
+            <div class="video-frame vision-live-frame gesture-video-frame">
               <img id="visionImage" alt="视觉检测画面" src="/assets/sample-detection.svg" />
+              <canvas id="gestureCanvas"></canvas>
+              <div class="gesture-lock" id="gestureStatus">手势控制未开启</div>
             </div>
           </article>
           <article class="panel glow-panel vision-detect-panel">
@@ -67,6 +76,7 @@
         </section>
       </main>
     </div>
+    <script src="/assets/vendor/mediapipe/hands/hands.js"></script>
     <script src="/assets/js/app.js?v=manual-hold-v1"></script>
   </body>
 </html>
