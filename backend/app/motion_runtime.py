@@ -66,12 +66,16 @@ class MotionStatus:
         "Mcnamu_driver_X3": False,
         "sllidar_node": False,
         "laser_Avoidance_a1_X3": False,
+        "laser_Tracker_a1_X3": False,
     })
     scan_active: bool = False
     scan_message_received: bool = False
     cmd_vel_publisher: str = ""
     manual_ready: bool = False
     manual_port_ready: bool = False
+    bridge_ready: bool = False
+    port_6001_ready: bool = False
+    camera_8080_ready: bool = False
     serial_owner: str = ""
     errors: list[str] = field(default_factory=list)
     mode: str = "idle"
@@ -91,6 +95,9 @@ class MotionStatus:
             "cmd_vel_publisher": self.cmd_vel_publisher,
             "manual_ready": self.manual_ready,
             "manual_port_ready": self.manual_port_ready,
+            "bridge_ready": self.bridge_ready,
+            "port_6001_ready": self.port_6001_ready,
+            "camera_8080_ready": self.camera_8080_ready,
             "serial_owner": self.serial_owner,
             "errors": self.errors,
             "mode": self.mode,
@@ -351,9 +358,10 @@ echo "$name created"
         return (
             f"export ROBOT_TYPE={m.robot_type}; "
             f"export RPLIDAR_TYPE={m.rplidar_type}; "
-            "source /opt/ros/foxy/setup.bash && "
-            f"source {m.container_icar_ws}/install/setup.bash && "
-            f"source {m.container_library_ws}/install/setup.bash"
+            "source /opt/ros/foxy/setup.bash 2>/dev/null; "
+            f"source {m.container_icar_ws}/install/setup.bash 2>/dev/null; "
+            f"source {m.container_library_ws}/install/setup.bash 2>/dev/null; "
+            "true"
         )
 
     # ── Stop app / bridge ────────────────────────────────────────
@@ -511,7 +519,7 @@ echo "$name created"
         command = (
             f"{self._ros_setup()} && "
             f"nohup ros2 run {m.avoidance_package} {m.avoidance_node} "
-            f"--ros-args -p linear:={lin} -p angular:={ang} -p Switch:=true "
+            f"--ros-args -p linear:={lin} -p angular:={ang} -p Switch:=false "
             f">/tmp/icar_laser_avoidance.log 2>&1 &"
         )
         return self._docker_exec(command, timeout_sec=10, tolerate=True)
@@ -523,10 +531,26 @@ echo "$name created"
         )
         return bool(result.stdout.strip())
 
+    def _start_tracking_node(self) -> CommandResult:
+        m = self.motion
+        command = (
+            f"{self._ros_setup()} && "
+            f"nohup ros2 run {m.tracking_package} {m.tracking_node} "
+            f">/tmp/icar_laser_tracking.log 2>&1 &"
+        )
+        return self._docker_exec(command, timeout_sec=10, tolerate=True)
+
     def _stop_avoidance_node(self) -> None:
         m = self.motion
         self._docker_exec(
             f"pkill -TERM -f {shlex.quote(m.avoidance_node)} 2>/dev/null || true",
+            timeout_sec=6, tolerate=True,
+        )
+        time.sleep(0.5)
+
+    def _stop_tracking_node(self) -> None:
+        self._docker_exec(
+            f"pkill -TERM -f {shlex.quote(self.motion.tracking_node)} 2>/dev/null || true",
             timeout_sec=6, tolerate=True,
         )
         time.sleep(0.5)
@@ -544,6 +568,7 @@ echo "$name created"
         patterns = [
             self.motion.driver_node,
             self.motion.avoidance_node,
+            self.motion.tracking_node,
             "sllidar_node",
             "static_transform_publisher",
         ]
@@ -555,23 +580,27 @@ echo "$name created"
         time.sleep(2)
 
     def _pub_cmd_vel_publisher(self) -> str:
+        """Check which node publishes /cmd_vel by querying each candidate node."""
+        for node_base in ("laser_Avoidance_a1", "laser_Tracker_a1"):
+            result = self._docker_exec(
+                f"{self._ros_setup()} && timeout 5s ros2 node info /{node_base} 2>/dev/null || true",
+                timeout_sec=10, tolerate=True,
+            )
+            if "/cmd_vel" in result.stdout:
+                return node_base
+        # Fallback: raw topic info
         result = self._docker_exec(
             f"{self._ros_setup()} && timeout 5s ros2 topic info /cmd_vel 2>/dev/null || true",
             timeout_sec=10, tolerate=True,
         )
-        for line in result.stdout.splitlines():
-            if "Publisher count:" in line:
-                count = line.split(":")[-1].strip()
-                if count != "0":
-                    return self._resolve_cmd_vel_publisher()
-        return ""
+        if "Publisher count: 1" in result.stdout:
+            return "has_publisher_unknown"
+        if "Publisher count: 0" in result.stdout:
+            return "none"
+        return result.stdout.strip()[-200:]
 
     def _resolve_cmd_vel_publisher(self) -> str:
-        result = self._docker_exec(
-            f"{self._ros_setup()} && timeout 5s ros2 topic info /cmd_vel 2>/dev/null || true",
-            timeout_sec=10, tolerate=True,
-        )
-        return result.stdout.strip()[-800:]
+        return self._pub_cmd_vel_publisher()
 
     # ── Health check ──────────────────────────────────────────────
 
@@ -608,16 +637,21 @@ echo "$name created"
             status.nodes["Mcnamu_driver_X3"] = self._node_running(m.driver_node)
             status.nodes["sllidar_node"] = self._node_running("sllidar_node")
             status.nodes["laser_Avoidance_a1_X3"] = self._node_running(m.avoidance_node)
+            status.nodes["laser_Tracker_a1_X3"] = self._node_running(m.tracking_node)
 
             status.scan_active = self._scan_publisher_count() > 0
             status.scan_message_received = self._check_scan_message()
             status.cmd_vel_publisher = self._pub_cmd_vel_publisher()
 
             all_nodes_ok = all(status.nodes.values())
+            avoidance_base = m.avoidance_node.replace("_X3", "")
+            tracking_base = m.tracking_node.replace("_X3", "")
+            cmd_vel_ok = (status.cmd_vel_publisher in (avoidance_base, tracking_base, "has_publisher_unknown")
+                          and status.cmd_vel_publisher != "none")
             status.ok = (
-                status.flock_held and all_nodes_ok
+                all_nodes_ok
                 and status.scan_active and status.scan_message_received
-                and m.avoidance_node in status.cmd_vel_publisher
+                and cmd_vel_ok
             )
             if not status.ok:
                 if not all_nodes_ok:
@@ -625,8 +659,8 @@ echo "$name created"
                     status.errors.append(f"dead nodes: {dead}")
                 if not status.scan_message_received:
                     status.errors.append("/scan has no actual LaserScan messages")
-                if m.avoidance_node not in status.cmd_vel_publisher:
-                    status.errors.append("avoidance node is not the /cmd_vel publisher")
+                if not cmd_vel_ok:
+                    status.errors.append(f"no avoidance/tracking node found in /cmd_vel publisher info")
             status.message = "healthy" if status.ok else "; ".join(status.errors)
         except Exception as exc:
             status.errors.append(f"health check error: {exc}")
@@ -659,6 +693,9 @@ echo "$name created"
             serial_pids = self._serial_owner_pids()
             s.manual_ready = app_proc is not None and (app_proc.pid in serial_pids)
             s.manual_port_ready = self._port_open(6000)
+            s.bridge_ready = bridge_proc is not None and (bridge_proc.pid in serial_pids)
+            s.port_6001_ready = self._port_open(6001)
+            s.camera_8080_ready = self._port_open(8080)
             owners: list[str] = []
             if app_proc and app_proc.pid in serial_pids:
                 owners.append("app.py")
@@ -694,7 +731,7 @@ echo "$name created"
         ssh_check = self._ssh_sanity_check()
         if not ssh_check["ok"]:
             return {"ok": False, "reason": "ssh_failed", "message": ssh_check["message"],
-                    "steps": [_step("ssh_check", False, **ssh_check)]}
+                    "steps": [_step("ssh_check", False, message=ssh_check.get("message", ""), stdout=ssh_check.get("stdout", "")[:200])]}
 
         _step("ssh_check", True)
 
@@ -732,7 +769,11 @@ echo "$name created"
 
         # 4. Stop manual services
         stop_result = self._stop_manual_services()
-        _step("stop_manual", stop_result.get("ok", False), details=stop_result)
+        _step("stop_manual", bool(stop_result.get("ok")),
+              app_killed=stop_result.get("app", {}).get("ok"),
+              bridge_killed=stop_result.get("bridge", {}).get("ok"),
+              serial_free=stop_result.get("serial_free"),
+              fuser_used=stop_result.get("fuser_k_used", False))
         if not stop_result.get("ok"):
             return {"ok": False, "reason": "manual_stop_failed", "details": stop_result, "steps": steps}
 
@@ -763,7 +804,9 @@ echo "$name created"
             _step("container_start", False, error=str(exc))
             return {"ok": False, "reason": "container_failed", "message": str(exc), "steps": steps}
 
-        # 7. Start ROS2 nodes
+        # 7. Start ROS2 nodes (kill any strays first)
+        self._stop_all_ros_nodes()
+        time.sleep(1)
         self._start_driver_node()
         _step("driver_started", True)
         time.sleep(1.5)
@@ -886,5 +929,196 @@ echo "$name created"
 
         return result
 
+    # ── Start / Stop laser tracking ──────────────────────────────
+
+    def start_laser_tracking(self, owner: str = "") -> dict[str, Any]:
+        steps: list[dict[str, Any]] = []
+
+        def _step(name: str, ok: bool, **kwargs: Any) -> dict[str, Any]:
+            s = {"step": name, "ok": ok, **kwargs}
+            steps.append(s)
+            return s
+
+        # 0. SSH sanity check
+        ssh_check = self._ssh_sanity_check()
+        if not ssh_check["ok"]:
+            return {"ok": False, "reason": "ssh_failed", "message": ssh_check["message"],
+                    "steps": [_step("ssh_check", False, message=ssh_check.get("message", ""), stdout=ssh_check.get("stdout", "")[:200])]}
+        _step("ssh_check", True)
+
+        # 1. Check existing lease
+        existing = self._read_lease()
+        if existing and existing.mode in ("laser_avoidance", "laser_tracking"):
+            return {"ok": False, "reason": "conflict",
+                    "message": f"mode {existing.mode} already holds lease",
+                    "lease": existing.to_dict(), "steps": steps}
+        _step("lease_check", True, existing_mode=existing.mode if existing else "none")
+
+        # 2. Identify current manual restore baseline
+        all_procs = self._list_python_processes()
+        serial_pids_before = self._serial_owner_pids()
+        manual_restore = self._identify_manual_restore()
+        app_proc = self._find_process(self.motion.app_path_glob)
+        bridge_proc = self._find_process(self.motion.bridge_path_glob)
+        known_pids: set[int] = set()
+        if app_proc:
+            known_pids.add(app_proc.pid)
+        if bridge_proc:
+            known_pids.add(bridge_proc.pid)
+        _step("identify_manual", True, manual_restore=manual_restore,
+              app_pid=app_proc.pid if app_proc else None,
+              bridge_pid=bridge_proc.pid if bridge_proc else None,
+              serial_pids_before=serial_pids_before,
+              all_python_processes=[f"{p.pid}:{p.cmdline[:80]}" for p in all_procs[:20]])
+
+        # 3. Best-effort stop via TCP
+        try:
+            self._stop_via_tcp()
+            _step("tcp_stop", True)
+        except Exception as exc:
+            _step("tcp_stop", False, error=str(exc))
+
+        # 4. Stop manual services
+        stop_result = self._stop_manual_services()
+        _step("stop_manual", bool(stop_result.get("ok")),
+              app_killed=stop_result.get("app", {}).get("ok"),
+              bridge_killed=stop_result.get("bridge", {}).get("ok"),
+              serial_free=stop_result.get("serial_free"),
+              fuser_used=stop_result.get("fuser_k_used", False))
+        if not stop_result.get("ok"):
+            return {"ok": False, "reason": "manual_stop_failed", "details": stop_result, "steps": steps}
+
+        # 5. Verify serial port free
+        time.sleep(1)
+        serial_pids = self._serial_owner_pids()
+        unknown = [p for p in serial_pids if p not in known_pids]
+        still_alive = [p for p in serial_pids if p in known_pids]
+        _step("serial_check", len(serial_pids) == 0,
+              serial_pids=serial_pids, known_pids=list(known_pids),
+              still_alive=still_alive, unknown=unknown)
+        if still_alive:
+            details = [{"pid": p, "cmdline": self._proc_cmdline(p), "reason": "known process still alive"} for p in still_alive]
+            return {"ok": False, "reason": "serial_still_occupied",
+                    "message": f"known processes still hold /dev/myserial after kill",
+                    "details": details, "steps": steps}
+        if unknown:
+            details = [{"pid": p, "cmdline": self._proc_cmdline(p)} for p in unknown]
+            return {"ok": False, "reason": "unknown_serial_owner", "unknown_pids": details,
+                    "message": "unknown processes hold /dev/myserial; refusing to proceed", "steps": steps}
+
+        # 6. Start container
+        try:
+            self._ensure_container()
+            _step("container_start", True, container=self.motion.container_name)
+        except Exception as exc:
+            _step("container_start", False, error=str(exc))
+            return {"ok": False, "reason": "container_failed", "message": str(exc), "steps": steps}
+
+        # 7. Start ROS2 nodes (kill any strays first)
+        self._stop_all_ros_nodes()
+        time.sleep(1)
+        self._start_driver_node()
+        _step("driver_started", True)
+        time.sleep(1.5)
+
+        self._start_lidar_node()
+        _step("lidar_started", True)
+        time.sleep(3)
+
+        self._start_tracking_node()
+        _step("tracking_started", True)
+        time.sleep(2)
+
+        # 8. Write lease
+        lease = LeaseInfo(
+            owner=owner or f"console-{uuid.uuid4().hex[:8]}",
+            mode="laser_tracking",
+            started_at=time.time(),
+            manual_restore=manual_restore,
+        )
+        self._atomic_write_lease(lease)
+        _step("lease_written", True, lease=lease.to_dict())
+
+        # 9. Health check
+        health_start = time.time()
+        deadline = health_start + 25
+        last_status: MotionStatus | None = None
+        health_rounds = 0
+        while time.time() < deadline:
+            time.sleep(2)
+            health_rounds += 1
+            s = self._quick_check()
+            last_status = s
+            _step(f"health_round_{health_rounds}", s.ok,
+                  nodes=s.nodes, scan_ok=s.scan_message_received,
+                  cmd_vel=s.cmd_vel_publisher[:80] if s.cmd_vel_publisher else "")
+            if s.ok:
+                return {"ok": True, "status": s.to_dict(), "steps": steps,
+                        "message": "laser tracking healthy"}
+            if s.errors:
+                time.sleep(1)
+
+        return {
+            "ok": False, "reason": "health_check_failed", "steps": steps,
+            "status": last_status.to_dict() if last_status else None,
+            "message": "tracking nodes did not become healthy within timeout",
+        }
+
+    def stop_laser_tracking(self, emergency: bool = False) -> dict[str, Any]:
+        lease = self._read_lease()
+        restore_mode = lease.manual_restore if lease else "none"
+        result: dict[str, Any] = {"ok": True, "emergency": emergency, "steps": []}
+
+        # 1. Stop tracking node first
+        try:
+            self._stop_tracking_node()
+            result["steps"].append("tracking_node_stopped")
+        except Exception as exc:
+            result["steps"].append(f"tracking_stop_error: {exc}")
+
+        # 2. Publish zero velocity
+        if self._container_running():
+            try:
+                self._publish_zero_velocity()
+                result["steps"].append("zero_velocity_sent")
+            except Exception as exc:
+                result["steps"].append(f"zero_vel_error: {exc}")
+
+        # 3. Stop all ROS nodes
+        try:
+            self._stop_all_ros_nodes()
+            result["steps"].append("ros_nodes_stopped")
+        except Exception as exc:
+            result["steps"].append(f"ros_stop_error: {exc}")
+
+        # 4. Stop container
+        try:
+            self._stop_container()
+            result["steps"].append("container_stopped")
+        except Exception as exc:
+            result["steps"].append(f"container_error: {exc}")
+
+        # 5. Restore manual control
+        restore_result = self._restore_manual(restore_mode)
+        result["restore"] = restore_result
+        result["steps"].append(f"manual_restore={restore_mode}")
+
+        # 6. Clean up lease and PID files
+        self._delete_lease()
+        self._delete_pid_file()
+        result["steps"].append("lease_cleaned")
+
+        # 7. Verify serial port restored
+        time.sleep(1)
+        serial_pids = self._serial_owner_pids()
+        result["serial_owner"] = serial_pids
+        result["manual_ready"] = restore_result.get("manual_ready", False)
+        result["manual_port_ready"] = restore_result.get("manual_port_ready", False)
+
+        return result
+
     def emergency_stop(self, reason: str = "web") -> dict[str, Any]:
+        lease = self._read_lease()
+        if lease and lease.mode == "laser_tracking":
+            return self.stop_laser_tracking(emergency=True)
         return self.stop_laser_avoidance(emergency=True)

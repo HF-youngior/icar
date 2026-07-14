@@ -57,6 +57,17 @@
             </div>
           </article>
           <article class="panel glow-panel">
+            <div class="panel-title"><h2>雷达跟随</h2><p id="trackingMode">idle</p></div>
+            <div id="trackingProgress" style="display:none;margin:0 0 12px 0;padding:10px;background:rgba(0,255,255,0.05);border-radius:6px;max-height:260px;overflow-y:auto;font-size:13px;">
+              <div id="trackingSteps"></div>
+            </div>
+            <div class="aux-grid">
+              <button class="neon-btn primary wide" id="startTrackingBtn">启动跟随</button>
+              <button class="neon-btn ghost wide" id="stopTrackingBtn">停止跟随</button>
+              <button class="neon-btn danger wide" id="estopTrackingBtn">急停</button>
+            </div>
+          </article>
+          <article class="panel glow-panel">
             <div class="panel-title"><h2>运行状态</h2><p id="healthSummary">等待启动</p></div>
             <div class="status-list">
               <div><span>Owner</span><strong id="roamOwner">--</strong></div>
@@ -75,7 +86,7 @@
               <div><span>app.py</span><strong id="appStatus">--</strong></div>
               <div><span>6000 端口</span><strong id="port6000Status">--</strong></div>
               <div><span>bridge</span><strong id="bridgeStatus">--</strong></div>
-              <div><span>6041 端口</span><strong id="port6001Status">--</strong></div>
+              <div><span>6001 端口</span><strong id="port6001Status">--</strong></div>
               <div><span>摄像头 8080</span><strong id="camera8080Status">--</strong></div>
             </div>
           </article>

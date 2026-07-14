@@ -83,6 +83,18 @@ class StateHub:
             "active": False,
             "owner": "",
             "mode": "idle",
+            "container_running": False,
+            "flock_held": False,
+            "nodes": {
+                "Mcnamu_driver_X3": False,
+                "sllidar_node": False,
+                "laser_Tracker_a1_X3": False,
+            },
+            "scan_active": False,
+            "scan_message_received": False,
+            "cmd_vel_publisher": "",
+            "errors": [],
+            "message": "",
             "updated_at": now_text(),
         }
         self.alarms: list[dict[str, Any]] = []

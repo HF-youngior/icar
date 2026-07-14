@@ -643,6 +643,21 @@ async def emergency_stop(payload: dict[str, Any] | None = None) -> dict[str, Any
     manual_emergency_block_until = time.monotonic() + EMERGENCY_MANUAL_BLOCK_SEC
     reason = (payload or {}).get("reason", "web")
     await navigation.emergency_stop(str(reason))
+    if motion.is_laser_lease_active():
+        await motion.stop(emergency=True)
+        await state.update_free_roam(
+            active=False, mode="idle", container_running=False, flock_held=False,
+            nodes={"Mcnamu_driver_X3": False, "sllidar_node": False, "laser_Avoidance_a1_X3": False},
+            scan_active=False, scan_message_received=False, cmd_vel_publisher="",
+            errors=[], message="emergency_stopped",
+        )
+        await state.update_laser_tracking(
+            active=False, mode="idle", container_running=False, flock_held=False,
+            nodes={"Mcnamu_driver_X3": False, "sllidar_node": False, "laser_Tracker_a1_X3": False},
+            scan_active=False, scan_message_received=False, cmd_vel_publisher="",
+            errors=[], message="stopped",
+        )
+    await state.update_robot(mode="emergency_stop", last_command="emergency_stop")
     return {"ok": True, "blocked_manual_for_sec": EMERGENCY_MANUAL_BLOCK_SEC}
 
 
@@ -976,6 +991,66 @@ async def free_roam_stop(payload: dict[str, Any] | None = None) -> dict[str, Any
     except Exception as exc:
         logger.exception("free-roam stop failed")
         await state.add_alarm("free_roam", "warning", f"激光避障停止失败：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/laser-tracking/start")
+async def laser_tracking_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload or {}
+    owner = str(body.get("owner", "")).strip()[:64]
+    try:
+        result = await motion.start_tracking(owner=owner)
+        if not result.get("ok"):
+            detail = result.get("message") or result.get("reason") or "laser-tracking start failed"
+            await state.add_alarm("laser_tracking", "warning", f"雷达跟随启动失败：{detail}", "backend")
+            raise HTTPException(status_code=409 if result.get("reason") == "conflict" else 503,
+                                detail=result)
+        await state.update_laser_tracking(
+            active=True, owner=owner, mode="laser_tracking",
+            container_running=result.get("status", {}).get("container_running", False),
+            flock_held=result.get("status", {}).get("flock_held", False),
+            nodes=result.get("status", {}).get("nodes", {}),
+            scan_active=result.get("status", {}).get("scan_active", False),
+            scan_message_received=result.get("status", {}).get("scan_message_received", False),
+            cmd_vel_publisher=result.get("status", {}).get("cmd_vel_publisher", ""),
+            errors=result.get("status", {}).get("errors", []),
+            message=result.get("message", ""),
+        )
+        await state.update_robot(mode="laser_tracking", last_command="laser_tracking_start", last_error=None)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("laser-tracking start failed")
+        await state.add_alarm("laser_tracking", "warning", f"雷达跟随启动异常：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/laser-tracking/status")
+async def laser_tracking_status() -> dict[str, Any]:
+    try:
+        return await motion.status()
+    except Exception as exc:
+        logger.exception("laser-tracking status failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/laser-tracking/stop")
+async def laser_tracking_stop(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    emergency = bool((payload or {}).get("emergency", False))
+    try:
+        result = await motion.stop_tracking(emergency=emergency)
+        await state.update_laser_tracking(
+            active=False, mode="idle", container_running=False, flock_held=False,
+            nodes={"Mcnamu_driver_X3": False, "sllidar_node": False, "laser_Tracker_a1_X3": False},
+            scan_active=False, scan_message_received=False, cmd_vel_publisher="",
+            errors=[], message="stopped",
+        )
+        await state.update_robot(mode="standby", last_command="laser_tracking_stop", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("laser-tracking stop failed")
+        await state.add_alarm("laser_tracking", "warning", f"雷达跟随停止失败：{exc}", "backend")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

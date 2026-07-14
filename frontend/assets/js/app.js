@@ -526,15 +526,24 @@ function renderFreeRoam() {
 
   const manual = state.snapshot.free_roam || {};
   setText("manualRestoreMsg", manual.manual_ready
-    ? ("manual_ready=" + manual.manual_ready + " port_ready=" + manual.manual_port_ready)
+    ? ("6000=" + (manual.manual_port_ready ? "open" : "closed") + " 6001=" + (manual.port_6001_ready ? "open" : "closed"))
     : "--");
-  setText("appStatus", manual.manual_ready ? "running" : "--");
+  setText("appStatus", manual.manual_ready ? "running" : "stopped");
   setText("port6000Status", manual.manual_port_ready ? "open" : "closed");
+  setText("bridgeStatus", manual.bridge_ready ? "running" : "stopped");
+  setText("port6001Status", manual.port_6001_ready ? "open" : "closed");
+  setText("camera8080Status", manual.camera_8080_ready ? "open" : "closed");
 
   if (!state.freeRoam.owner && fr.owner) {
     state.freeRoam.owner = fr.owner;
     localStorage.setItem("icar_free_roam_owner", fr.owner);
   }
+
+  const lt = state.snapshot.laser_tracking || {};
+  setText("trackingMode", lt.mode || "idle");
+  const tnodes = lt.nodes || {};
+  setText("appStatus", lt.manual_ready !== undefined ? (lt.manual_ready ? "running" : "stopped") : "--");
+  setText("bridgeStatus", lt.bridge_ready !== undefined ? (lt.bridge_ready ? "running" : "stopped") : "--");
 }
 
 function setupFreeRoamControls() {
@@ -614,6 +623,63 @@ function setupFreeRoamControls() {
   if (estopBtn) {
     estopBtn.addEventListener("click", () => {
       postJson("/api/free-roam/stop", { emergency: true }).catch((error) => console.warn("free-roam estop failed", error));
+    });
+  }
+}
+
+function setupLaserTrackingControls() {
+  const startBtn = $("startTrackingBtn");
+  if (startBtn) {
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      setText("trackingMode", "starting...");
+      const progressEl = $("trackingProgress");
+      const stepList = $("trackingSteps");
+      if (progressEl) progressEl.style.display = "block";
+      if (stepList) stepList.innerHTML = "";
+
+      function addStep(step, ok, detail) {
+        if (!stepList) return;
+        const icon = ok ? "✓" : "✗";
+        const cls = ok ? "step-ok" : "step-fail";
+        stepList.innerHTML += `<div class="${cls}"><span>${icon}</span> ${escapeHtml(step)}<small>${escapeHtml(detail || "")}</small></div>`;
+      }
+
+      try {
+        const result = await postJson("/api/laser-tracking/start", {
+          owner: state.freeRoam.owner || ("web-" + Date.now().toString(36)),
+        });
+        const steps = result ? (result.steps || []) : [];
+        if (steps.length) {
+          steps.forEach((s) => addStep(s.step, s.ok, s.error || s.message || ""));
+        }
+        if (result && result.ok) {
+          setText("trackingMode", "laser_tracking");
+          addStep("done", true, "跟随已启动，小车正在跟踪目标");
+        } else {
+          const reason = result ? (result.reason || result.message || "unknown") : "no response";
+          setText("trackingMode", "error");
+          addStep("FAILED", false, reason);
+        }
+      } catch (error) {
+        setText("trackingMode", "error");
+        addStep("exception", false, error.message || String(error));
+      }
+      startBtn.disabled = false;
+    });
+  }
+
+  const stopBtn = $("stopTrackingBtn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => {
+      postJson("/api/laser-tracking/stop", {}).catch((error) => console.warn("tracking stop failed", error));
+    });
+  }
+
+  const estopBtn = $("estopTrackingBtn");
+  if (estopBtn) {
+    estopBtn.addEventListener("click", () => {
+      postJson("/api/laser-tracking/stop", { emergency: true }).catch((error) => console.warn("tracking estop failed", error));
     });
   }
 }
@@ -3423,7 +3489,7 @@ function bindEvents() {
   });
   if (page === "navigation") bindSlamEvents();
   if (page === "cruise") bindCruiseEvents();
-  if (page === "free_roam") setupFreeRoamControls();
+  if (page === "free_roam") { setupFreeRoamControls(); setupLaserTrackingControls(); }
   window.addEventListener("blur", () => sendStopNow());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) sendStopNow();
@@ -3452,6 +3518,10 @@ async function initPage() {
   if (page === "free_roam") {
     getJson("/api/free-roam/status").then((data) => {
       if (data) state.snapshot.free_roam = data;
+      renderFreeRoam();
+    }).catch(() => {});
+    getJson("/api/laser-tracking/status").then((data) => {
+      if (data) state.snapshot.laser_tracking = data;
       renderFreeRoam();
     }).catch(() => {});
   }

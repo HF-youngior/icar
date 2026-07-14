@@ -53,13 +53,11 @@ class MotionCoordinator:
     async def start(self, owner: str = "", linear: float = 0, angular: float = 0) -> dict[str, Any]:
 
         def _start() -> dict[str, Any]:
-            # If SLAM holds the lease, stop SLAM first
             if self._slam_runtime is not None:
                 try:
                     slam_status = self._slam_runtime.status()
-                    slam_mode = slam_status.get("mode", "idle")
-                    if slam_mode not in ("idle",):
-                        logger.info("stopping SLAM (mode=%s) before laser avoidance", slam_mode)
+                    if slam_status.get("mode", "idle") not in ("idle",):
+                        logger.info("stopping SLAM (mode=%s) before laser avoidance", slam_status.get("mode"))
                         self._slam_runtime.stop()
                         time.sleep(1)
                 except Exception as exc:
@@ -69,10 +67,12 @@ class MotionCoordinator:
             if result.get("ok"):
                 self._active_owner = owner
                 self._health_failures = 0
-                self._start_health_loop()
             return result
 
-        return await self._with_lock(_start, timeout_sec=90.0)
+        result = await self._with_lock(_start, timeout_sec=90.0)
+        if result.get("ok"):
+            self._start_health_loop()
+        return result
 
     # ── Stop ─────────────────────────────────────────────────────
 
@@ -131,9 +131,49 @@ class MotionCoordinator:
 
     async def _fail_safe_stop(self) -> None:
         try:
-            await self.stop(emergency=True)
+            lease = self.runtime._read_lease()
+            if lease and lease.mode == "laser_tracking":
+                await self.stop_tracking(emergency=True)
+            else:
+                await self.stop(emergency=True)
         except Exception:
             logger.exception("fail-safe stop failed")
+
+    # ── Laser tracking ────────────────────────────────────────────
+
+    async def start_tracking(self, owner: str = "") -> dict[str, Any]:
+
+        def _start() -> dict[str, Any]:
+            if self._slam_runtime is not None:
+                try:
+                    slam_status = self._slam_runtime.status()
+                    if slam_status.get("mode", "idle") not in ("idle",):
+                        logger.info("stopping SLAM before laser tracking")
+                        self._slam_runtime.stop()
+                        time.sleep(1)
+                except Exception as exc:
+                    logger.warning("SLAM stop before tracking: %s", exc)
+            result = self.runtime.start_laser_tracking(owner=owner)
+            if result.get("ok"):
+                self._active_owner = owner
+                self._health_failures = 0
+            return result
+
+        result = await self._with_lock(_start, timeout_sec=90.0)
+        if result.get("ok"):
+            self._start_health_loop()
+        return result
+
+    async def stop_tracking(self, emergency: bool = False) -> dict[str, Any]:
+
+        def _stop() -> dict[str, Any]:
+            self._stop_health_loop()
+            result = self.runtime.stop_laser_tracking(emergency=emergency)
+            self._active_owner = ""
+            self._health_failures = 0
+            return result
+
+        return await self._with_lock(_stop, timeout_sec=60.0)
 
     # ── SLAM handoff ─────────────────────────────────────────────
 

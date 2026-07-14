@@ -187,12 +187,17 @@ class MotionCoordinatorLockTest(unittest.TestCase):
 
     def test_is_laser_lease_active_returns_false_when_no_lease(self):
         from app.motion import MotionCoordinator
+        from app.motion_runtime import LeaseInfo
         coord = MotionCoordinator(AppConfig())
+        coord.runtime._read_lease = lambda: None
         self.assertFalse(coord.is_laser_lease_active())
+        coord.runtime._read_lease = lambda: LeaseInfo(mode="laser_avoidance")
+        self.assertTrue(coord.is_laser_lease_active())
 
     def test_is_slam_lease_active_returns_false_when_no_lease(self):
         from app.motion import MotionCoordinator
         coord = MotionCoordinator(AppConfig())
+        coord.runtime._read_lease = lambda: None
         self.assertFalse(coord.is_slam_lease_active())
 
 

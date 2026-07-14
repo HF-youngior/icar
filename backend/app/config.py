@@ -90,6 +90,8 @@ class MotionConfig:
     lidar_launch_file: str = "sllidar_launch.py"
     avoidance_node: str = "laser_Avoidance_a1_X3"
     avoidance_package: str = "icar_laser"
+    tracking_node: str = "laser_Tracker_a1_X3"
+    tracking_package: str = "icar_laser"
     default_linear: float = 0.08
     default_angular: float = 0.30
     app_path_glob: str = "*/Rosmaster-App/rosmaster/app.py*"
