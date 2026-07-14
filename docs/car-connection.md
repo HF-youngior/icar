@@ -608,7 +608,7 @@ http://127.0.0.1:8000/navigation
 正常页面顶部应该显示：
 
 ```text
-SLAM Navigation v3
+SLAM Navigation v4
 激光 SLAM 建图与自动导航
 ```
 

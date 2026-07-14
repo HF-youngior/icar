@@ -83,8 +83,8 @@ class TcpCarAdapter(CarAdapter):
             "stop": 0,
             "forward": 1,
             "backward": 2,
-            "left": 5,
-            "right": 6,
+            "left": 6,
+            "right": 5,
             "emergency_stop": 7,
         }
         if key not in direction_map:

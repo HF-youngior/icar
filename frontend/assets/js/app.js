@@ -6,6 +6,8 @@ const state = {
   manualStopInFlight: false,
   lastManualStopAt: 0,
   manualStopTimer: null,
+  manualHoldTimer: null,
+  manualHoldInFlight: false,
   manualDirection: null,
   camera: {
     candidates: [],
@@ -733,6 +735,12 @@ function withCacheBust(url) {
   return `${url}${separator}_=${Date.now()}`;
 }
 
+function normalizeSlamMapName(value) {
+  const name = String(value || "").trim();
+  if (!name) return "";
+  return name.endsWith(".yaml") ? name : `${name}.yaml`;
+}
+
 function stopCamera() {
   const image = $("visionImage");
   state.camera.active = false;
@@ -1117,14 +1125,21 @@ function handleGestureResults(results) {
   sendGestureCommand(state.gesture.stableGesture);
 }
 
-async function sendManualHttp(direction) {
+async function sendManualHttp(direction, options = {}) {
   const speed = currentSpeed();
   const payload = { direction, speed };
-  if (direction !== "stop") payload.duration_ms = 260;
+  if (direction !== "stop") {
+    if (options.hold) {
+      payload.hold = true;
+    } else {
+      payload.duration_ms = Number(options.durationMs ?? 260);
+    }
+  }
   try {
-    await postJson("/api/control/manual", payload);
+    return await postJson("/api/control/manual", payload);
   } catch (error) {
     console.warn("manual control failed", error);
+    return null;
   }
 }
 
@@ -1132,6 +1147,10 @@ function clearManualHold() {
   if (state.manualStopTimer) {
     clearTimeout(state.manualStopTimer);
     state.manualStopTimer = null;
+  }
+  if (state.manualHoldTimer) {
+    clearInterval(state.manualHoldTimer);
+    state.manualHoldTimer = null;
   }
 }
 
@@ -1168,6 +1187,39 @@ function stopNavigationTask() {
   });
 }
 
+function startManualHold(direction) {
+  if (!direction) return;
+  if (direction === "stop") {
+    sendStopNow(true);
+    return;
+  }
+  clearManualHold();
+  state.manualDirection = direction;
+  sendManualHoldRefresh(direction);
+  state.manualHoldTimer = window.setInterval(() => {
+    if (state.manualDirection === direction) {
+      sendManualHoldRefresh(direction);
+    }
+  }, 220);
+}
+
+async function sendManualHoldRefresh(direction) {
+  if (state.manualHoldInFlight) return;
+  state.manualHoldInFlight = true;
+  try {
+    await sendManualHttp(direction, { hold: true });
+  } finally {
+    state.manualHoldInFlight = false;
+  }
+}
+
+function stopManualHold(direction) {
+  if (!state.manualDirection) return;
+  if (!direction || state.manualDirection === direction) {
+    sendStopNow(true);
+  }
+}
+
 function sendManualPulse(direction) {
   if (!direction) return;
   if (direction === "stop") {
@@ -1184,19 +1236,50 @@ function sendManualPulse(direction) {
   }, 260);
 }
 
-async function loadSlamMaps() {
+function bindManualButton(button) {
+  let activePointerId = null;
+  const direction = button.dataset.dir;
+  button.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    activePointerId = event.pointerId;
+    button.setPointerCapture?.(event.pointerId);
+    startManualHold(direction);
+  });
+  const finish = (event) => {
+    if (activePointerId !== null && event.pointerId !== activePointerId) return;
+    event.preventDefault();
+    button.releasePointerCapture?.(event.pointerId);
+    activePointerId = null;
+    if (direction !== "stop") stopManualHold(direction);
+  };
+  button.addEventListener("pointerup", finish);
+  button.addEventListener("pointercancel", finish);
+  button.addEventListener("pointerleave", finish);
+  button.addEventListener("click", (event) => event.preventDefault());
+  button.addEventListener("contextmenu", (event) => event.preventDefault());
+}
+
+async function loadSlamMaps(preferredMap = "") {
   const select = $("slamMapSelect");
   if (!select) return;
   setText("slamMapHint", "正在读取小车地图列表...");
   try {
-    const data = await getJson("/api/slam/maps");
+    const data = await getJson(withCacheBust("/api/slam/maps"));
     state.slam.maps = data.maps || [];
     select.innerHTML = state.slam.maps.length
       ? state.slam.maps.map((map) => `<option value="${escapeHtml(map.name)}">${escapeHtml(map.name)}</option>`).join("")
       : `<option value="">未找到地图</option>`;
-    if (!state.slam.selectedMap && state.slam.maps.length) {
-      state.slam.selectedMap = state.slam.maps[0].name;
-      select.value = state.slam.selectedMap;
+    const names = new Set(state.slam.maps.map((map) => map.name));
+    const requested = normalizeSlamMapName(preferredMap);
+    const selected = names.has(requested)
+      ? requested
+      : (names.has(state.slam.selectedMap) ? state.slam.selectedMap : (state.slam.maps[0]?.name || ""));
+    state.slam.selectedMap = selected;
+    select.value = selected;
+    if (!selected) {
+      state.slam.mapImage = null;
+      state.slam.mapMeta = null;
+      drawSlamMap();
     }
     setText("slamMapHint", state.slam.maps.length ? "地图列表已加载" : "小车 maps 目录没有 YAML 地图");
     if (state.slam.selectedMap) await loadSelectedSlamMap();
@@ -1760,7 +1843,7 @@ function bindSlamEvents() {
   $("slamSaveMapBtn")?.addEventListener("click", () => runSlamAction("保存地图", async () => {
     const name = $("slamMapNameInput")?.value || "yahboomcar_web";
     const result = await postJson("/api/slam/map/save", { map_name: name });
-    await loadSlamMaps();
+    await loadSlamMaps(result.map || name);
     return result;
   }));
   $("slamStartNavBtn")?.addEventListener("click", (event) => {
@@ -2054,7 +2137,6 @@ function writeAscii(view, offset, value) {
 const CRUISE_HEADINGS = ["north", "east", "south", "west"];
 const CRUISE_HEADING_LABELS = ["北", "东", "南", "西"];
 const CRUISE_TURN_QUARTER_PER_PULSE = 0.1;
-const CRUISE_PHYSICAL_TURN_DIRECTION = { left: "right", right: "left" };
 const CRUISE_MOVES = [
   { dx: 0, dy: -1 },
   { dx: 1, dy: 0 },
@@ -2532,26 +2614,24 @@ async function sendCruiseManual(direction) {
     return;
   }
   const duration = direction === "forward" || direction === "backward" ? cruiseForwardMs() : cruiseTurnMs();
-  const physicalDirection = CRUISE_PHYSICAL_TURN_DIRECTION[direction] || direction;
   await postJson("/api/control/manual", {
-    direction: physicalDirection,
+    direction,
     speed: cruiseSpeed(),
     duration_ms: duration,
   });
   updateCruisePoseByDirection(direction);
-  cruiseLog(`遥控 ${direction}${physicalDirection !== direction ? ` -> 实车${physicalDirection}` : ""} · ${duration}ms`);
+  cruiseLog(`遥控 ${direction} · ${duration}ms`);
   if (!state.cruise.running) clearCruisePlan();
   renderCruisePage();
 }
 
 async function sendCruiseContinuousTurn(direction, totalMs) {
-  const physicalDirection = CRUISE_PHYSICAL_TURN_DIRECTION[direction] || direction;
   const startedAt = Date.now();
   cruiseLog(`连续${direction === "left" ? "左" : "右"}掉头 · ${Math.round(totalMs)}ms`);
   while (Date.now() - startedAt < totalMs) {
     await waitCruiseReady();
     await postJson("/api/control/manual", {
-      direction: physicalDirection,
+      direction,
       speed: cruiseSpeed(),
       duration_ms: 0,
       hold: true,
@@ -2957,10 +3037,7 @@ function bindEvents() {
   });
   updateSpeedDisplay();
   document.querySelectorAll(".neon-dpad button").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      sendManualPulse(button.dataset.dir);
-    });
+    bindManualButton(button);
   });
   if (page === "navigation") bindSlamEvents();
   if (page === "cruise") bindCruiseEvents();

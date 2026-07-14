@@ -54,13 +54,13 @@ def check_api() -> None:
         health = client.get("/api/health")
         if health.status_code != 200 or not health.json().get("ok"):
             raise AssertionError(f"health failed: {health.text}")
-        if health.json().get("ui_version") != "slam-navigation-v3":
+        if health.json().get("ui_version") != "slam-navigation-v4":
             raise AssertionError(f"unexpected UI version: {health.text}")
 
         navigation_page = client.get("/navigation")
         page_text = navigation_page.text
-        if navigation_page.status_code != 200 or "SLAM Navigation v3" not in page_text:
-            raise AssertionError("navigation page is not the SLAM v3 page")
+        if navigation_page.status_code != 200 or "SLAM Navigation v4" not in page_text:
+            raise AssertionError("navigation page is not the SLAM v4 page")
         for marker in ("点选当前位置/起点", "点选目标点", "建图遥控器"):
             if marker not in page_text:
                 raise AssertionError(f"navigation page missing marker: {marker}")

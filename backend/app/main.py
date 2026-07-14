@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -43,8 +44,11 @@ voice = VoicePipeline()
 mcp_tools = McpToolService(state, adapter)
 slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
+manual_emergency_generation = 0
+manual_emergency_block_until = 0.0
 cruise_routes_lock = asyncio.Lock()
 CRUISE_ROUTES_FILE = PROJECT_ROOT / "data" / "cruise_routes.json"
+EMERGENCY_MANUAL_BLOCK_SEC = 1.5
 
 
 async def maybe_execute_llm_tool(parsed_output: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -186,7 +190,7 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "adapter": adapter.name,
         "project_root": str(PROJECT_ROOT),
-        "ui_version": "slam-navigation-v3",
+        "ui_version": "slam-navigation-v4",
     }
 
 
@@ -363,10 +367,21 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
     speed = float(payload.get("speed", 0.16))
     hold = bool(payload.get("hold") or payload.get("continuous"))
     pulse_ms = max(80, min(1000, int(payload.get("duration_ms", 260))))
+    request_generation = manual_emergency_generation
     if direction not in {"forward", "backward", "left", "right", "stop"}:
         raise HTTPException(status_code=400, detail="Unsupported direction")
     try:
         async with manual_control_lock:
+            if direction != "stop" and (
+                request_generation != manual_emergency_generation
+                or time.monotonic() < manual_emergency_block_until
+            ):
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "reason": "emergency_stop_active",
+                    "direction": direction,
+                }
             if direction == "stop":
                 result = await adapter.stop()
             else:
@@ -431,9 +446,12 @@ async def auxiliary_control(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/control/emergency-stop")
 async def emergency_stop(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    global manual_emergency_block_until, manual_emergency_generation
+    manual_emergency_generation += 1
+    manual_emergency_block_until = time.monotonic() + EMERGENCY_MANUAL_BLOCK_SEC
     reason = (payload or {}).get("reason", "web")
     await navigation.emergency_stop(str(reason))
-    return {"ok": True}
+    return {"ok": True, "blocked_manual_for_sec": EMERGENCY_MANUAL_BLOCK_SEC}
 
 
 @app.post("/api/navigation/goal")
@@ -566,7 +584,8 @@ async def slam_save_map(payload: dict[str, Any] | None = None) -> dict[str, Any]
     map_name = str((payload or {}).get("map_name", "yahboomcar_web"))
     try:
         result = await asyncio.to_thread(slam_runtime.save_map, map_name)
-        await state.update_navigation(message=f"地图保存完成：{result.get('map')}", progress=1)
+        message = f"地图保存完成：{result.get('map')}" if result.get("ok") else str(result.get("message") or "地图保存后尚未在列表中确认")
+        await state.update_navigation(message=message, progress=1 if result.get("ok") else 0.95)
         return result
     except Exception as exc:
         logger.exception("slam map save failed")

@@ -570,6 +570,8 @@ select:focus {
   font-size: 30px;
   font-weight: 900;
   box-shadow: inset 0 0 20px rgba(38, 244, 255, 0.06);
+  touch-action: none;
+  user-select: none;
 }
 
 .neon-dpad button:hover {

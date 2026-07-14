@@ -20,7 +20,7 @@ class TcpCarAdapterTest(unittest.TestCase):
         self.assertEqual(self.adapter._command_payloads("stop"), ["$011504001A#"])
         self.assertEqual(
             self.adapter._command_payloads("left", speed=0.32),
-            ["$0116066464E5#", "$011504051F#"],
+            ["$0116066464E5#", "$0115040620#"],
         )
 
     def test_rejects_unsupported_command(self) -> None:

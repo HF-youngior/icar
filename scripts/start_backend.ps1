@@ -138,7 +138,7 @@ else {
 }
 
 Write-Host ""
-Write-Host "Navigation page should show: SLAM Navigation v3 / 激光 SLAM 建图与自动导航." -ForegroundColor Cyan
+Write-Host "Navigation page should show: SLAM Navigation v4 / 激光 SLAM 建图与自动导航." -ForegroundColor Cyan
 Write-Host "If you still see '房间导航与巡逻', stop the old backend process and hard-refresh the browser." -ForegroundColor Yellow
 Write-Host "If Windows Firewall asks, allow access on Private networks." -ForegroundColor Yellow
 Write-Host ""

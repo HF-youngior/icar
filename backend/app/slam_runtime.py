@@ -136,13 +136,18 @@ class SlamRuntimeManager:
         container_path = f"{self.container_maps_dir}/{safe_name}"
         command = f"timeout 30s ros2 launch yahboomcar_nav save_map_launch.py map_path:={shlex.quote(container_path)}"
         result = self._docker_exec(f"{self._ros_setup()} && {command}", timeout_sec=36, tolerate=True)
-        maps = self.list_maps(refresh_meta=False)
+        maps = self._wait_for_saved_map(safe_name)
         ok = any(item["name"] == f"{safe_name}.yaml" for item in maps)
+        if not ok:
+            self._copy_saved_map_from_container(safe_name)
+            maps = self._wait_for_saved_map(safe_name)
+            ok = any(item["name"] == f"{safe_name}.yaml" for item in maps)
         self.last_message = f"Saved map {safe_name}" if ok else f"Map save command finished; verify {safe_name}.yaml"
         self.last_updated = time.time()
         return {
             "ok": ok,
             "map": f"{safe_name}.yaml",
+            "message": self.last_message,
             "stdout": result.stdout[-2000:],
             "stderr": result.stderr[-2000:],
             "maps": maps,
@@ -347,6 +352,28 @@ class SlamRuntimeManager:
             time.sleep(0.7)
         return last
 
+    def _wait_for_saved_map(self, safe_name: str) -> list[dict[str, Any]]:
+        expected = f"{safe_name}.yaml"
+        maps: list[dict[str, Any]] = []
+        for _ in range(6):
+            maps = self.list_maps(refresh_meta=False)
+            if any(item["name"] == expected for item in maps):
+                return maps
+            time.sleep(0.5)
+        return maps
+
+    def _copy_saved_map_from_container(self, safe_name: str) -> CommandResult:
+        yaml_source = f"{self.container_name}:{self.container_maps_dir}/{safe_name}.yaml"
+        pgm_source = f"{self.container_name}:{self.container_maps_dir}/{safe_name}.pgm"
+        yaml_target = f"{self.remote_maps_dir}/{safe_name}.yaml"
+        pgm_target = f"{self.remote_maps_dir}/{safe_name}.pgm"
+        command = (
+            f"mkdir -p {shlex.quote(self.remote_maps_dir)} && "
+            f"docker cp {shlex.quote(yaml_source)} {shlex.quote(yaml_target)} && "
+            f"docker cp {shlex.quote(pgm_source)} {shlex.quote(pgm_target)}"
+        )
+        return self._ssh(command, timeout_sec=10, tolerate=True)
+
     def _read_amcl_pose_once(self) -> dict[str, Any]:
         self.ensure_container()
         command = (
@@ -430,6 +457,7 @@ sys.exit(2)
         }
 
     def list_maps(self, refresh_meta: bool = True) -> list[dict[str, Any]]:
+        self._sync_container_maps_to_host()
         command = f"find {shlex.quote(self.remote_maps_dir)} -maxdepth 1 -type f -name '*.yaml' -printf '%f|%s|%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null || true"
         result = self._ssh(command, timeout_sec=6)
         maps: list[dict[str, Any]] = []
@@ -451,6 +479,16 @@ sys.exit(2)
                     item["error"] = str(exc)
             maps.append(item)
         return maps
+
+    def _sync_container_maps_to_host(self) -> CommandResult | None:
+        if not self._container_running():
+            return None
+        source = f"{self.container_name}:{self.container_maps_dir}/."
+        command = (
+            f"mkdir -p {shlex.quote(self.remote_maps_dir)} && "
+            f"docker cp {shlex.quote(source)} {shlex.quote(self.remote_maps_dir)} >/dev/null 2>&1 || true"
+        )
+        return self._ssh(command, timeout_sec=12, tolerate=True)
 
     def fetch_map(self, map_name: str) -> dict[str, Any]:
         safe_map = self._sanitize_map_file(map_name)
