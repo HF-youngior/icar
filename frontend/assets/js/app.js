@@ -2578,7 +2578,6 @@ function writeAscii(view, offset, value) {
 
 const CRUISE_HEADINGS = ["north", "east", "south", "west"];
 const CRUISE_HEADING_LABELS = ["北", "东", "南", "西"];
-const CRUISE_TURN_QUARTER_PER_PULSE = 0.1;
 const CRUISE_MOVES = [
   { dx: 0, dy: -1 },
   { dx: 1, dy: 0 },
@@ -2599,12 +2598,26 @@ function clampCruiseCell(cell) {
   };
 }
 
+function normalizeCruiseHeading(heading, fallback = 0) {
+  if (typeof heading === "string") {
+    const normalized = heading.trim().toLowerCase();
+    const index = CRUISE_HEADINGS.indexOf(normalized);
+    if (index >= 0) return index;
+  }
+  const number = Number(heading);
+  const fallbackNumber = Number(fallback);
+  const safe = Number.isFinite(number)
+    ? number
+    : (Number.isFinite(fallbackNumber) ? fallbackNumber : 0);
+  return ((safe % 4) + 4) % 4;
+}
+
 function cruiseHeadingIndex(heading) {
-  return ((Math.round(Number(heading) || 0) % 4) + 4) % 4;
+  return ((Math.round(normalizeCruiseHeading(heading)) % 4) + 4) % 4;
 }
 
 function cruiseHeadingQuarter(heading) {
-  return ((Number(heading) % 4) + 4) % 4;
+  return normalizeCruiseHeading(heading);
 }
 
 function cruiseHeadingName(heading) {
@@ -2631,6 +2644,10 @@ function cruiseTurnMs() {
 
 function cruiseTurnPulsesPerQuarter() {
   return Math.round(clampNumber($("cruiseTurnPulsesInput")?.value, 1, 20, 10));
+}
+
+function cruiseTurnQuarterPerPulse() {
+  return 1 / cruiseTurnPulsesPerQuarter();
 }
 
 function cruiseTurnaroundPulses() {
@@ -2906,7 +2923,7 @@ function saveCruiseWaypoint() {
     name: `途经点 ${index}`,
     x: pose.x,
     y: pose.y,
-    heading: pose.heading,
+    heading: normalizeCruiseHeading(pose.heading, 0),
     color: state.cruise.colors[state.cruise.waypoints.length % state.cruise.colors.length],
   };
   state.cruise.waypoints.push(point);
@@ -2969,10 +2986,14 @@ function renameSelectedCruiseWaypoint() {
 function applyCruiseGridSize() {
   state.cruise.gridWidth = cruiseGridWidthInput();
   state.cruise.gridHeight = cruiseGridHeightInput();
-  state.cruise.pose = clampCruiseCell(state.cruise.pose);
+  state.cruise.pose = {
+    ...clampCruiseCell(state.cruise.pose),
+    heading: normalizeCruiseHeading(state.cruise.pose?.heading, 0),
+  };
   state.cruise.waypoints = state.cruise.waypoints.map((point) => ({
     ...point,
     ...clampCruiseCell(point),
+    heading: normalizeCruiseHeading(point.heading, 0),
   }));
   const seen = new Set();
   state.cruise.obstacles = state.cruise.obstacles
@@ -3033,10 +3054,11 @@ function resetCruisePose() {
 
 function updateCruisePoseByDirection(direction) {
   const pose = state.cruise.pose;
+  const turnQuarter = cruiseTurnQuarterPerPulse();
   if (direction === "left") {
-    pose.heading = cruiseHeadingQuarter(pose.heading - CRUISE_TURN_QUARTER_PER_PULSE);
+    pose.heading = cruiseHeadingQuarter(pose.heading - turnQuarter);
   } else if (direction === "right") {
-    pose.heading = cruiseHeadingQuarter(pose.heading + CRUISE_TURN_QUARTER_PER_PULSE);
+    pose.heading = cruiseHeadingQuarter(pose.heading + turnQuarter);
   } else if (direction === "forward" || direction === "backward") {
     const move = CRUISE_MOVES[cruiseHeadingIndex(pose.heading)] || CRUISE_MOVES[0];
     const sign = direction === "forward" ? 1 : -1;
@@ -3174,14 +3196,18 @@ function applyCruiseRoute(route) {
   const heightInput = $("cruiseGridHeightInput");
   if (widthInput) widthInput.value = String(state.cruise.gridWidth);
   if (heightInput) heightInput.value = String(state.cruise.gridHeight);
-  state.cruise.pose = clampCruiseCell(data.pose || { x: 3, y: state.cruise.gridHeight - 4, heading: 0 });
+  const loadedPose = data.pose || { x: 3, y: state.cruise.gridHeight - 4, heading: 0 };
+  state.cruise.pose = {
+    ...clampCruiseCell(loadedPose),
+    heading: normalizeCruiseHeading(loadedPose.heading, 0),
+  };
   state.cruise.waypoints = Array.isArray(data.waypoints) ? data.waypoints.map((point, index) => ({
     ...point,
     ...clampCruiseCell(point),
     id: point.id || `wp-${Date.now()}-${index}`,
     name: point.name || `途经点 ${index + 1}`,
     color: point.color || state.cruise.colors[index % state.cruise.colors.length],
-    heading: Number(point.heading || 0),
+    heading: normalizeCruiseHeading(point.heading, 0),
   })) : [];
   state.cruise.obstacles = Array.isArray(data.obstacles) ? data.obstacles.map(clampCruiseCell) : [];
   state.cruise.selectedWaypointId = state.cruise.waypoints[0]?.id || "";
@@ -3226,7 +3252,7 @@ async function planCruiseRoute() {
   const plan = await postJson("/api/cruise/plan", cruisePlanPayload());
   state.cruise.plan = plan;
   const first = state.cruise.waypoints[0];
-  state.cruise.pose = { x: first.x, y: first.y, heading: first.heading ?? state.cruise.pose.heading };
+  state.cruise.pose = { x: first.x, y: first.y, heading: normalizeCruiseHeading(first.heading, state.cruise.pose.heading) };
   const totals = plan.totals || {};
   const meters = Number(totals.distance_cells || 0) * cruiseStepMeters();
   cruiseLog(`规划完成：${totals.distance_cells || 0} 格，约 ${meters.toFixed(2)}m，${totals.turns || 0} 次转弯，${totals.move_commands || 0} 条动作`);
@@ -3307,7 +3333,7 @@ async function startCruiseExecution() {
   const plan = state.cruise.plan || await planCruiseRoute();
   if (!plan?.commands?.length) return;
   const first = state.cruise.waypoints[0];
-  state.cruise.pose = { x: first.x, y: first.y, heading: first.heading ?? state.cruise.pose.heading };
+  state.cruise.pose = { x: first.x, y: first.y, heading: normalizeCruiseHeading(first.heading, state.cruise.pose.heading) };
   state.cruise.running = true;
   state.cruise.paused = false;
   state.cruise.stopRequested = false;
@@ -3446,6 +3472,30 @@ async function playVoiceCue() {
   await sendAuxControl("voice", { text: "主人，我在", volume_percent: 85 });
 }
 
+async function playVoiceCuePreset() {
+  setText("auxResult", "发送中...");
+  try {
+    const result = await postJson("/api/mcp/tools/speak", {
+      mode: "preset",
+      preset_key: "wake_ack",
+      text: "主人，我在",
+    });
+    const playback = result.playback || {};
+    const ok = result.ok !== false && playback.ok !== false;
+    setText(
+      "auxResult",
+      playback.spoken
+        ? `语音已播放：${playback.engine || "prepared-voice"}`
+        : `未确认语音播放：${playback.message || playback.engine || "unknown"}`,
+    );
+    await loadSnapshot();
+    if (ok) return;
+  } catch (error) {
+    console.warn("prepared voice playback failed", error);
+  }
+  await sendAuxControl("voice", { text: "主人，我在", volume_percent: 85 });
+}
+
 function bindEvents() {
   initConnectionInput();
   $("connectBtn")?.addEventListener("click", connect);
@@ -3464,7 +3514,7 @@ function bindEvents() {
   $("visionModeSelect")?.addEventListener("change", handleVisionModeChange);
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
   $("buzzerBtn")?.addEventListener("click", playBuzzerCue);
-  $("voicePlayBtn")?.addEventListener("click", playVoiceCue);
+  $("voicePlayBtn")?.addEventListener("click", playVoiceCuePreset);
   $("followLineBtn")?.addEventListener("click", toggleFollowLine);
   $("cameraAutoBtn")?.addEventListener("click", () => startCameraAuto());
   $("cameraNextBtn")?.addEventListener("click", () => {

@@ -217,6 +217,12 @@ fi
 if [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v aplay >/dev/null 2>&1; then
   aplay -q "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
+elif [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v paplay >/dev/null 2>&1; then
+  paplay "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
+  code=$?
+elif [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v pw-play >/dev/null 2>&1; then
+  pw-play "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
+  code=$?
 elif [ "$ICAR_VOICE_CODEC" = "mp3" ] && command -v mpg123 >/dev/null 2>&1; then
   mpg123 -q "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
