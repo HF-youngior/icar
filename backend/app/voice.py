@@ -228,19 +228,29 @@ class VoicePipeline:
             name = tool.get("name", "")
             description = tool.get("description", "")
             schema = json.dumps(tool.get("input_schema", {}), ensure_ascii=False)
-            tool_lines.append(f"- {name}: {description} | input_schema={schema}")
+            prepared_voices = tool.get("prepared_voices")
+            prepared_text = ""
+            if prepared_voices:
+                prepared_text = f" | prepared_voices={json.dumps(prepared_voices, ensure_ascii=False)}"
+            tool_lines.append(f"- {name}: {description} | input_schema={schema}{prepared_text}")
         tools_text = "\n".join(tool_lines) if tool_lines else "- none"
         return (
-            "你是家庭机器人指令解析器。\n"
-            "输入内容已经经过语音识别、关键词纠偏和唤醒词剥离。\n"
-            f"当前用户命令: {llm_input}\n"
+            "你是家庭机器人“小比”的语音控制层。你的名字叫小比，寓意是像一只比格一样活泼可靠。\n"
+            "输入内容已经经过语音识别和关键词纠偏，但没有剥离唤醒词；用户可能会说“小比”“小比小比”“比格”“小比格”来称呼你。\n"
+            "你需要理解完整用户原话，不要因为出现唤醒词就忽略后面的命令。\n"
+            f"当前用户原话: {llm_input}\n"
             "当前可用工具列表:\n"
             f"{tools_text}\n"
-            "请不要解释过程，不要补充无关内容，只返回一个 JSON 对象。\n"
-            "如果能映射到工具，请返回:\n"
-            "{\"intent\":\"tool_call\",\"tool\":\"工具名\",\"arguments\":{...},\"reply\":\"给用户的简短中文回复\"}\n"
-            "如果暂时不能映射到工具，请返回:\n"
-            "{\"intent\":\"chat\",\"reply\":\"给用户的简短中文回复\"}"
+            "回复规则:\n"
+            "1. 只返回一个 JSON 对象，不要输出 Markdown，不要解释过程。\n"
+            "2. 每次都必须包含 intent_summary，使用很短的中文概括你理解到的意图，例如“唤醒确认”“向前移动2米”“能力外请求”。\n"
+            "3. 每次都必须包含 reply，reply 是给用户听到的简短中文回复。\n"
+            "4. 每次都必须通过 tool_calls 至少安排一次语音回复。若准备好的语音能覆盖你的回复，优先调用 speak 且 mode=preset；只有准备好的语音不合适时才调用 speak 且 mode=tts。\n"
+            "5. 如果要控制小车，也把 move_distance 放入 tool_calls。工具调用顺序按数组顺序执行。\n"
+            "6. 如果用户只是呼唤你，没有明确命令，使用 prepared voice wake_ack，reply 写“我在”，intent_summary 写“唤醒确认”。\n"
+            "7. 当前能力范围主要是语音回复和前进/后退固定距离；超出能力范围时，优先使用 prepared voice unknown，reply 写“不知道”。\n"
+            "输出 JSON 格式固定为:\n"
+            "{\"intent\":\"tool_call|chat|unknown\",\"intent_summary\":\"简短意图\",\"reply\":\"简短中文回复\",\"tool_calls\":[{\"name\":\"工具名\",\"arguments\":{...}}]}"
         )
 
     def ask_llm(self, llm_input: str, tool_definitions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -258,7 +268,7 @@ class VoicePipeline:
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是家庭机器人语音控制层。严格返回 JSON，不要输出 Markdown。",
+                    "content": "你是家庭机器人小比的语音控制层。严格返回 JSON，不要输出 Markdown。",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -297,14 +307,40 @@ class VoicePipeline:
     def process(self, audio_bytes: bytes, voice_format: str = "wav", tool_definitions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         asr_data = self.recognize(audio_bytes, voice_format=voice_format)
         transcript = asr_data.get("Result", "").strip()
+        return self.process_transcript(
+            transcript,
+            asr_data=asr_data,
+            tool_definitions=tool_definitions,
+        )
+
+    def process_transcript(
+        self,
+        transcript: str,
+        *,
+        asr_data: dict[str, Any] | None = None,
+        tool_definitions: list[dict[str, Any]] | None = None,
+        llm_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        asr_payload = asr_data or {}
         wake_phrase_matched, command_text, matched_phrase, normalized_transcript = self._match_wake_phrase(transcript)
-        llm_input = command_text if wake_phrase_matched else ""
-        llm_data = self.ask_llm(llm_input, tool_definitions) if wake_phrase_matched else {
+        llm_input = normalized_transcript if wake_phrase_matched else ""
+        resolved_llm_data = llm_data if wake_phrase_matched and llm_data is not None else None
+        if wake_phrase_matched and resolved_llm_data is None:
+            resolved_llm_data = self.ask_llm(llm_input, tool_definitions)
+        if not wake_phrase_matched:
+            resolved_llm_data = {
+                "enabled": False,
+                "output": "",
+                "prompt": "",
+                "parsed_output": None,
+            }
+        if resolved_llm_data is None:
+            resolved_llm_data = {
             "enabled": False,
             "output": "",
             "prompt": "",
             "parsed_output": None,
-        }
+            }
         return {
             "ok": True,
             "transcript": transcript,
@@ -314,12 +350,12 @@ class VoicePipeline:
             "wake_phrase_matched": wake_phrase_matched,
             "command_text": command_text,
             "llm_input": llm_input,
-            "llm_enabled": llm_data["enabled"],
-            "llm_prompt": llm_data["prompt"],
-            "llm_output": llm_data["output"],
-            "llm_parsed_output": llm_data.get("parsed_output"),
-            "tencent_request_id": asr_data.get("RequestId"),
-            "tencent_audio_duration_ms": asr_data.get("AudioDuration"),
-            "tencent_word_size": asr_data.get("WordSize"),
-            "tencent_word_list": asr_data.get("WordList"),
+            "llm_enabled": resolved_llm_data["enabled"],
+            "llm_prompt": resolved_llm_data["prompt"],
+            "llm_output": resolved_llm_data["output"],
+            "llm_parsed_output": resolved_llm_data.get("parsed_output"),
+            "tencent_request_id": asr_payload.get("RequestId"),
+            "tencent_audio_duration_ms": asr_payload.get("AudioDuration"),
+            "tencent_word_size": asr_payload.get("WordSize"),
+            "tencent_word_list": asr_payload.get("WordList"),
         }
