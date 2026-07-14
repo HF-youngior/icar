@@ -23,6 +23,7 @@ from .config import PROJECT_ROOT, load_config, resolve_project_path
 from .cruise_planner import CruisePlanningError, plan_cruise_route
 from .database import DatabaseStore
 from .mcp_tools import McpToolService
+from .motion import MotionCoordinator
 from .navigation import NavigationService
 from .sensors import SensorService
 from .slam_runtime import SlamRuntimeManager
@@ -47,6 +48,8 @@ tts = TencentTtsService()
 mcp_tools = McpToolService(state, adapter, tts, runtime)
 voice_records = VoiceInteractionStore()
 slam_runtime = SlamRuntimeManager(config)
+motion = MotionCoordinator(config, slam_runtime)
+slam_runtime.set_motion_coordinator(motion)
 manual_control_lock = asyncio.Lock()
 manual_emergency_generation = 0
 manual_emergency_block_until = 0.0
@@ -247,6 +250,11 @@ async def vision_page() -> FileResponse:
 @app.get("/alarms")
 async def alarms_page() -> FileResponse:
     return frontend_response("alarms.html")
+
+
+@app.get("/free_roam")
+async def free_roam_page() -> FileResponse:
+    return frontend_response("free_roam.html")
 
 
 @app.get("/reports")
@@ -512,6 +520,12 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
     request_generation = manual_emergency_generation
     if direction not in {"forward", "backward", "left", "right", "stop"}:
         raise HTTPException(status_code=400, detail="Unsupported direction")
+    if direction != "stop" and motion.is_laser_lease_active():
+        return {"ok": False, "blocked": True, "reason": "laser_avoidance_active",
+                "message": "激光避障正在运行，手动方向控制被禁止。请先停止激光避障或使用急停。"}
+    if direction != "stop" and motion.is_slam_lease_active():
+        return {"ok": False, "blocked": True, "reason": "slam_lease_active",
+                "message": "SLAM/导航正在运行，手动方向控制被禁止。"}
     if source == "slam" and direction != "stop":
         hold = False
         pulse_ms = min(pulse_ms, 500)
@@ -892,6 +906,76 @@ async def slam_stop() -> dict[str, Any]:
         return result
     except Exception as exc:
         logger.exception("slam stop failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/free-roam/start")
+async def free_roam_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload or {}
+    owner = str(body.get("owner", "")).strip()[:64]
+    linear = float(body.get("linear", 0) or 0)
+    angular = float(body.get("angular", 0) or 0)
+    try:
+        result = await motion.start(owner=owner, linear=linear, angular=angular)
+        if not result.get("ok"):
+            detail = result.get("message") or result.get("reason") or "free-roam start failed"
+            await state.add_alarm("free_roam", "warning", f"激光避障启动失败：{detail}", "backend")
+            raise HTTPException(status_code=409 if result.get("reason") == "conflict" else 503,
+                                detail=result)
+        await state.update_free_roam(
+            active=True,
+            owner=owner,
+            mode="laser_avoidance",
+            container_running=result.get("status", {}).get("container_running", False),
+            flock_held=result.get("status", {}).get("flock_held", False),
+            nodes=result.get("status", {}).get("nodes", {}),
+            scan_active=result.get("status", {}).get("scan_active", False),
+            scan_message_received=result.get("status", {}).get("scan_message_received", False),
+            cmd_vel_publisher=result.get("status", {}).get("cmd_vel_publisher", ""),
+            errors=result.get("status", {}).get("errors", []),
+            message=result.get("message", ""),
+        )
+        await state.update_robot(mode="laser_avoidance", last_command="free_roam_start", last_error=None)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("free-roam start failed")
+        await state.add_alarm("free_roam", "warning", f"激光避障启动异常：{exc}", "backend")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/free-roam/status")
+async def free_roam_status() -> dict[str, Any]:
+    try:
+        return await motion.status()
+    except Exception as exc:
+        logger.exception("free-roam status failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/free-roam/stop")
+async def free_roam_stop(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    emergency = bool((payload or {}).get("emergency", False))
+    try:
+        result = await motion.stop(emergency=emergency)
+        await state.update_free_roam(
+            active=False,
+            mode="idle",
+            container_running=False,
+            flock_held=False,
+            nodes={"Mcnamu_driver_X3": False, "sllidar_node": False, "laser_Avoidance_a1_X3": False},
+            scan_active=False,
+            scan_message_received=False,
+            cmd_vel_publisher="",
+            errors=[],
+            message="stopped",
+        )
+        await state.update_robot(mode="standby", last_command="free_roam_stop", last_error=None)
+        return result
+    except Exception as exc:
+        logger.exception("free-roam stop failed")
+        await state.add_alarm("free_roam", "warning", f"激光避障停止失败：{exc}", "backend")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

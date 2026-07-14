@@ -44,6 +44,10 @@ class SlamRuntimeManager:
         self.last_mode = "idle"
         self.last_message = "SLAM runtime idle"
         self.last_updated = 0.0
+        self._motion: Any = None
+
+    def set_motion_coordinator(self, motion: Any) -> None:
+        self._motion = motion
 
     @property
     def host(self) -> str:
@@ -115,7 +119,7 @@ class SlamRuntimeManager:
         self.ensure_container()
         self._stop_ros_processes()
         self.restart_container()
-        self._docker_exec("pkill -f '[a]pp.py' || true", timeout_sec=4, tolerate=True)
+        self._stop_manual_for_slam()
         self._docker_exec(
             f"rm -f /tmp/icar_slam_mapping_{algorithm}.log /tmp/icar_slam_laser_bringup.log",
             timeout_sec=4,
@@ -174,7 +178,7 @@ class SlamRuntimeManager:
         self.ensure_container()
         self._stop_ros_processes()
         self.restart_container()
-        self._docker_exec("pkill -f '[a]pp.py' || true", timeout_sec=4, tolerate=True)
+        self._stop_manual_for_slam()
         self._docker_exec(
             f"rm -f /tmp/icar_slam_laser_bringup.log /tmp/icar_slam_navigation_{algorithm}.log",
             timeout_sec=4,
@@ -627,6 +631,15 @@ echo "$name created"
             "stdout": result.stdout.strip(),
             "stderr": result.stderr.strip(),
         }
+
+    def _stop_manual_for_slam(self) -> None:
+        if self._motion is not None:
+            try:
+                self._motion.runtime._stop_manual_services()
+                return
+            except Exception:
+                pass
+        self._docker_exec("pkill -f '[a]pp.py' || true", timeout_sec=4, tolerate=True)
 
     def _container_running(self) -> bool:
         try:

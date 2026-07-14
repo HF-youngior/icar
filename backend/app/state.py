@@ -61,6 +61,30 @@ class StateHub:
             "stream_url": default_stream_url,
             "updated_at": now_text(),
         }
+        self.free_roam: dict[str, Any] = {
+            "active": False,
+            "owner": "",
+            "mode": "idle",
+            "container_running": False,
+            "flock_held": False,
+            "nodes": {
+                "Mcnamu_driver_X3": False,
+                "sllidar_node": False,
+                "laser_Avoidance_a1_X3": False,
+            },
+            "scan_active": False,
+            "scan_message_received": False,
+            "cmd_vel_publisher": "",
+            "errors": [],
+            "message": "",
+            "updated_at": now_text(),
+        }
+        self.laser_tracking: dict[str, Any] = {
+            "active": False,
+            "owner": "",
+            "mode": "idle",
+            "updated_at": now_text(),
+        }
         self.alarms: list[dict[str, Any]] = []
         self.reports: list[dict[str, Any]] = []
         resolve_project_path(config.reports_dir).mkdir(parents=True, exist_ok=True)
@@ -98,9 +122,21 @@ class StateHub:
             "sensors": list(self.sensors.values()),
             "vision": self.vision[:10],
             "vision_control": self.vision_control,
+            "free_roam": self.free_roam,
+            "laser_tracking": self.laser_tracking,
             "alarms": self.alarms[:20],
             "reports": self.reports[:20],
         }
+
+    async def update_free_roam(self, **changes: Any) -> None:
+        self.free_roam.update(changes)
+        self.free_roam["updated_at"] = now_text()
+        await self.broadcast("free_roam_status", self.free_roam)
+
+    async def update_laser_tracking(self, **changes: Any) -> None:
+        self.laser_tracking.update(changes)
+        self.laser_tracking["updated_at"] = now_text()
+        await self.broadcast("laser_tracking_status", self.laser_tracking)
 
     async def update_robot(self, **changes: Any) -> None:
         self.robot.update(changes)

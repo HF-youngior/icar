@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>自由巡航 | 智能家居管家机器人</title>
+    <link rel="stylesheet" href="/assets/css/styles.css?v=free-roam-v1" />
+  </head>
+  <body data-page="free_roam">
+    <div class="app-shell">
+      <aside class="neon-rail">
+        <a class="brand" href="/dashboard">
+          <span class="brand-mark">IC</span>
+          <span><strong>HomeBot</strong><small>智能家居管家机器人</small></span>
+        </a>
+        <nav class="rail-nav">
+          <a href="/dashboard">总览</a>
+          <a href="/control">遥控</a>
+          <a href="/navigation">导航</a>
+          <a href="/cruise">巡航</a>
+          <a class="active" href="/free_roam">自由巡航</a>
+          <a href="/vision">视觉</a>
+          <a href="/alarms">告警</a>
+          <a href="/reports">报告</a>
+        </nav>
+        <div class="rail-card"><span class="pulse-dot" id="railDot"></span><span id="railStatus">离线</span></div>
+      </aside>
+      <main class="page">
+        <header class="page-head">
+          <div>
+            <p class="eyebrow">Laser Avoidance</p>
+            <h1>自由巡航</h1>
+            <p class="subhead">激光雷达自动避障自主巡航，底盘串口由运动锁管理。</p>
+          </div>
+          <div class="connect-strip">
+            <input id="serverInput" value="" placeholder="ws://当前页面主机/ws" />
+            <button class="neon-btn primary" id="connectBtn">连接</button>
+            <button class="neon-btn ghost" id="disconnectBtn">断开</button>
+          </div>
+        </header>
+        <section class="control-layout">
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>避障控制</h2><p id="freeRoamMode">idle</p></div>
+            <div id="startupProgress" style="display:none;margin:0 0 12px 0;padding:10px;background:rgba(0,255,255,0.05);border-radius:6px;max-height:260px;overflow-y:auto;font-size:13px;">
+              <div id="startupSteps"></div>
+            </div>
+            <div class="speed-row">
+              <label for="linearRange">线速度 <span id="linearValue">0.08</span> m/s</label>
+              <input id="linearRange" type="range" min="0.04" max="0.20" value="0.08" step="0.01" />
+              <label for="angularRange">角速度 <span id="angularValue">0.30</span> rad/s</label>
+              <input id="angularRange" type="range" min="0.10" max="0.60" value="0.30" step="0.05" />
+            </div>
+            <div class="aux-grid">
+              <button class="neon-btn primary wide" id="startFreeRoamBtn">启动避障</button>
+              <button class="neon-btn ghost wide" id="stopFreeRoamBtn">停止避障</button>
+              <button class="neon-btn danger wide" id="estopFreeRoamBtn">急停</button>
+            </div>
+          </article>
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>运行状态</h2><p id="healthSummary">等待启动</p></div>
+            <div class="status-list">
+              <div><span>Owner</span><strong id="roamOwner">--</strong></div>
+              <div><span>容器</span><strong id="containerStatus">--</strong></div>
+              <div><span>flock</span><strong id="flockStatus">--</strong></div>
+              <div><span>底盘驱动</span><strong id="driverStatus">--</strong></div>
+              <div><span>雷达节点</span><strong id="lidarStatus">--</strong></div>
+              <div><span>避障算法</span><strong id="avoidanceStatus">--</strong></div>
+              <div><span>/scan</span><strong id="scanStatus">--</strong></div>
+              <div><span>/cmd_vel</span><strong id="cmdvelStatus">--</strong></div>
+            </div>
+          </article>
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>手控恢复</h2><p id="manualRestoreMsg">--</p></div>
+            <div class="status-list">
+              <div><span>app.py</span><strong id="appStatus">--</strong></div>
+              <div><span>6000 端口</span><strong id="port6000Status">--</strong></div>
+              <div><span>bridge</span><strong id="bridgeStatus">--</strong></div>
+              <div><span>6041 端口</span><strong id="port6001Status">--</strong></div>
+              <div><span>摄像头 8080</span><strong id="camera8080Status">--</strong></div>
+            </div>
+          </article>
+          <article class="panel glow-panel">
+            <div class="panel-title"><h2>错误与诊断</h2><p id="errorCount">0 条</p></div>
+            <div class="status-list" id="errorList">
+              <div><span>无</span><strong>--</strong></div>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/js/app.js?v=free-roam-v1"></script>
+  </body>
+</html>

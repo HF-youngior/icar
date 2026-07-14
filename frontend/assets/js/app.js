@@ -60,6 +60,11 @@ const state = {
     activeGoalId: "",
     initialPoseSent: false,
   },
+  freeRoam: {
+    linear: 0.08,
+    angular: 0.30,
+    owner: localStorage.getItem("icar_free_roam_owner") || "",
+  },
   cruise: {
     gridWidth: 48,
     gridHeight: 32,
@@ -106,6 +111,8 @@ const state = {
     sensors: [],
     vision: [],
     vision_control: {},
+    free_roam: {},
+    laser_tracking: {},
     alarms: [],
     reports: [],
   },
@@ -249,6 +256,10 @@ function handleMessage(type, payload) {
   } else if (type === "report_created") {
     state.snapshot.reports.unshift(payload);
     state.snapshot.reports = state.snapshot.reports.slice(0, 30);
+  } else if (type === "free_roam_status") {
+    state.snapshot.free_roam = payload;
+  } else if (type === "laser_tracking_status") {
+    state.snapshot.laser_tracking = payload;
   }
   render();
 }
@@ -273,6 +284,7 @@ function render() {
   if (page === "vision") renderVisionPage();
   if (page === "alarms") renderAlarmsPage();
   if (page === "reports") renderReportsPage();
+  if (page === "free_roam") renderFreeRoam();
 }
 
 function renderCommon() {
@@ -484,6 +496,126 @@ function renderReportsPage() {
       </div>
     `).join("")
     : `<div class="report-item"><strong>暂无报告</strong><span>导航到达、巡逻完成和异常事件会生成报告</span></div>`;
+}
+
+function renderFreeRoam() {
+  const fr = state.snapshot.free_roam || {};
+  setText("freeRoamMode", fr.mode || "idle");
+  setText("healthSummary", fr.message || (fr.active ? "运行中" : "等待启动"));
+  setText("roamOwner", fr.owner || "--");
+  setText("containerStatus", fr.container_running ? "running" : "stopped");
+  setText("flockStatus", fr.flock_held ? "held" : "free");
+  const nodes = fr.nodes || {};
+  setText("driverStatus", nodes.Mcnamu_driver_X3 ? "active" : "dead");
+  setText("lidarStatus", nodes.sllidar_node ? "active" : "dead");
+  setText("avoidanceStatus", nodes.laser_Avoidance_a1_X3 ? "active" : "dead");
+  setText("scanStatus", fr.scan_message_received ? "有数据" : (fr.scan_active ? "无消息" : "无发布者"));
+  setText("cmdvelStatus", fr.cmd_vel_publisher || "none");
+
+  const errors = fr.errors || [];
+  setText("errorCount", errors.length + " 条");
+  const errorList = $("errorList");
+  if (errorList) {
+    errorList.innerHTML = errors.length
+      ? errors.map((e) => `<div><span>!</span><strong>${escapeHtml(String(e))}</strong></div>`).join("")
+      : `<div><span>无</span><strong>--</strong></div>`;
+  }
+
+  const startBtn = $("startFreeRoamBtn");
+  if (startBtn) startBtn.disabled = fr.active === true;
+
+  const manual = state.snapshot.free_roam || {};
+  setText("manualRestoreMsg", manual.manual_ready
+    ? ("manual_ready=" + manual.manual_ready + " port_ready=" + manual.manual_port_ready)
+    : "--");
+  setText("appStatus", manual.manual_ready ? "running" : "--");
+  setText("port6000Status", manual.manual_port_ready ? "open" : "closed");
+
+  if (!state.freeRoam.owner && fr.owner) {
+    state.freeRoam.owner = fr.owner;
+    localStorage.setItem("icar_free_roam_owner", fr.owner);
+  }
+}
+
+function setupFreeRoamControls() {
+  const linearSlider = $("linearRange");
+  const angularSlider = $("angularRange");
+  if (linearSlider) {
+    linearSlider.addEventListener("input", () => {
+      state.freeRoam.linear = parseFloat(linearSlider.value);
+      setText("linearValue", state.freeRoam.linear.toFixed(2));
+    });
+  }
+  if (angularSlider) {
+    angularSlider.addEventListener("input", () => {
+      state.freeRoam.angular = parseFloat(angularSlider.value);
+      setText("angularValue", state.freeRoam.angular.toFixed(2));
+    });
+  }
+
+  const startBtn = $("startFreeRoamBtn");
+  if (startBtn) {
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      setText("freeRoamMode", "starting...");
+      setText("healthSummary", "正在启动激光避障...");
+      const progressEl = $("startupProgress");
+      const stepList = $("startupSteps");
+      if (progressEl) progressEl.style.display = "block";
+      if (stepList) stepList.innerHTML = "";
+
+      function addStep(step, ok, detail) {
+        if (!stepList) return;
+        const icon = ok ? "✓" : "✗";
+        const cls = ok ? "step-ok" : "step-fail";
+        stepList.innerHTML += `<div class="${cls}"><span>${icon}</span> ${escapeHtml(step)}<small>${escapeHtml(detail || "")}</small></div>`;
+      }
+
+      try {
+        const result = await postJson("/api/free-roam/start", {
+          owner: state.freeRoam.owner || ("web-" + Date.now().toString(36)),
+          linear: state.freeRoam.linear,
+          angular: state.freeRoam.angular,
+        });
+        const steps = result ? (result.steps || []) : [];
+        if (steps.length) {
+          steps.forEach((s) => addStep(s.step, s.ok, s.error || s.message || ""));
+        }
+        if (result && result.ok) {
+          setText("freeRoamMode", "laser_avoidance");
+          setText("healthSummary", result.message || "启动成功");
+          state.freeRoam.owner = result.status ? result.status.lease.owner : state.freeRoam.owner;
+          localStorage.setItem("icar_free_roam_owner", state.freeRoam.owner);
+          addStep("done", true, "避障已启动，小车正在自主巡航");
+        } else {
+          const reason = result ? (result.reason || result.message || "unknown") : "no response";
+          setText("freeRoamMode", "error");
+          setText("healthSummary", "启动失败: " + reason);
+          addStep("FAILED", false, reason);
+        }
+      } catch (error) {
+        setText("freeRoamMode", "error");
+        setText("healthSummary", "启动异常: " + (error.message || error));
+        addStep("exception", false, error.message || String(error));
+        console.warn("free-roam start failed", error);
+      }
+      startBtn.disabled = false;
+    });
+  }
+
+  const stopBtn = $("stopFreeRoamBtn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => {
+      postJson("/api/free-roam/stop", {}).catch((error) => console.warn("free-roam stop failed", error));
+    });
+  }
+
+  const estopBtn = $("estopFreeRoamBtn");
+  if (estopBtn) {
+    estopBtn.addEventListener("click", () => {
+      postJson("/api/free-roam/stop", { emergency: true }).catch((error) => console.warn("free-roam estop failed", error));
+    });
+  }
 }
 
 function renderSensors() {
@@ -3291,6 +3423,7 @@ function bindEvents() {
   });
   if (page === "navigation") bindSlamEvents();
   if (page === "cruise") bindCruiseEvents();
+  if (page === "free_roam") setupFreeRoamControls();
   window.addEventListener("blur", () => sendStopNow());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) sendStopNow();
@@ -3315,6 +3448,12 @@ async function initPage() {
   }
   if (page === "cruise") {
     renderCruisePage();
+  }
+  if (page === "free_roam") {
+    getJson("/api/free-roam/status").then((data) => {
+      if (data) state.snapshot.free_roam = data;
+      renderFreeRoam();
+    }).catch(() => {});
   }
   connect();
 }

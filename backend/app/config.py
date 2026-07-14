@@ -71,11 +71,42 @@ class VisionConfig:
 
 
 @dataclass
+class MotionConfig:
+    container_name: str = "icar_free_roam"
+    image_name: str = "icar/ros-foxy:1.0.2"
+    robot_type: str = "x3"
+    rplidar_type: str = "a1"
+    host_icar_ws: str = "/home/jetson/temp/icar_ros2_ws/icar_ws"
+    host_library_ws: str = "/home/jetson/code/software/library_ws"
+    container_icar_ws: str = "/root/icar_ros2_ws/temp/icar_ros2_ws/icar_ws"
+    container_library_ws: str = "/root/library_ws"
+    lock_file: str = "/tmp/icar-motion.lock"
+    lease_file: str = "/tmp/icar-motion-lease.json"
+    supervisor_pid_file: str = "/tmp/icar-motion-supervisor.pid"
+    supervisor_log: str = "/tmp/icar-motion-supervisor.log"
+    driver_node: str = "Mcnamu_driver_X3"
+    driver_package: str = "icar_bringup"
+    lidar_launch_package: str = "sllidar_ros2"
+    lidar_launch_file: str = "sllidar_launch.py"
+    avoidance_node: str = "laser_Avoidance_a1_X3"
+    avoidance_package: str = "icar_laser"
+    default_linear: float = 0.08
+    default_angular: float = 0.30
+    app_path_glob: str = "*/Rosmaster-App/rosmaster/app.py*"
+    bridge_path_glob: str = "*/icar_rosmaster_tcp_bridge.py*"
+    zero_vel_dwell_sec: float = 2.0
+    health_poll_interval_sec: float = 2.5
+    health_failure_threshold: int = 2
+    ssh_timeout_sec: float = 10.0
+
+
+@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     car: CarConfig = field(default_factory=CarConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
     points_file: str = "config/points.json"
     routes_file: str = "config/routes.json"
     reports_dir: str = "data/reports"
@@ -100,6 +131,7 @@ def _dataclass_to_dict(config: AppConfig) -> dict[str, Any]:
         "car": vars(config.car),
         "database": vars(config.database),
         "vision": vars(config.vision),
+        "motion": vars(config.motion),
         "points_file": config.points_file,
         "routes_file": config.routes_file,
         "reports_dir": config.reports_dir,
@@ -115,11 +147,13 @@ def _from_dict(data: dict[str, Any]) -> AppConfig:
     car = CarConfig(**data.get("car", {}))
     database = DatabaseConfig(**data.get("database", {}))
     vision = VisionConfig(**data.get("vision", {}))
+    motion = MotionConfig(**data.get("motion", {}))
     return AppConfig(
         server=server,
         car=car,
         database=database,
         vision=vision,
+        motion=motion,
         points_file=data.get("points_file", "config/points.json"),
         routes_file=data.get("routes_file", "config/routes.json"),
         reports_dir=data.get("reports_dir", "data/reports"),
