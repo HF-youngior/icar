@@ -453,12 +453,16 @@ async def mcp_speak_text(payload: dict[str, Any]) -> dict[str, Any]:
 async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
     direction = str(payload.get("direction", "")).lower()
     speed = float(payload.get("speed", 0.16))
+    source = str(payload.get("source", "")).lower()
     hold = bool(payload.get("hold") or payload.get("continuous"))
-    precision = bool(payload.get("precision") or payload.get("source") == "cruise")
+    precision = bool(payload.get("precision") or source == "cruise")
     pulse_ms = max(80, min(1000, int(payload.get("duration_ms", 260))))
     request_generation = manual_emergency_generation
     if direction not in {"forward", "backward", "left", "right", "stop"}:
         raise HTTPException(status_code=400, detail="Unsupported direction")
+    if source == "slam" and direction != "stop":
+        hold = False
+        pulse_ms = min(pulse_ms, 500)
     if direction in {"left", "right"} and not precision:
         hold = False
         pulse_ms = min(pulse_ms, 500)

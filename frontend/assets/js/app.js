@@ -8,6 +8,7 @@ const state = {
   manualStopTimer: null,
   manualHoldTimer: null,
   manualHoldInFlight: false,
+  slamManualPulseInFlight: false,
   manualDirection: null,
   camera: {
     candidates: [],
@@ -773,6 +774,7 @@ const GESTURE_COMMANDS = {
 
 const GESTURE_REPEAT_INTERVAL_MS = 220;
 const TURN_PULSE_MS = 450;
+const SLAM_MANUAL_PULSE_MS = 500;
 
 function renderGestureStatus() {
   if (page !== "vision") return;
@@ -1130,6 +1132,7 @@ function handleGestureResults(results) {
 async function sendManualHttp(direction, options = {}) {
   const speed = currentSpeed();
   const payload = { direction, speed };
+  if (options.source) payload.source = options.source;
   if (direction !== "stop") {
     if (options.hold) {
       payload.hold = true;
@@ -1195,6 +1198,10 @@ function startManualHold(direction) {
     sendStopNow(true);
     return;
   }
+  if (page === "navigation") {
+    sendSlamManualPulse(direction);
+    return;
+  }
   if (direction === "left" || direction === "right") {
     sendManualPulse(direction, TURN_PULSE_MS);
     return;
@@ -1207,6 +1214,32 @@ function startManualHold(direction) {
       sendManualHoldRefresh(direction);
     }
   }, 330);
+}
+
+async function sendSlamManualPulse(direction) {
+  if (!direction) return;
+  if (state.slamManualPulseInFlight) return;
+  clearManualHold();
+  state.slamManualPulseInFlight = true;
+  state.manualDirection = direction;
+  const stopTimer = window.setTimeout(() => {
+    if (state.manualDirection === direction) {
+      sendStopNow(true).catch((error) => console.warn("slam pulse stop failed", error));
+    }
+    state.slamManualPulseInFlight = false;
+  }, SLAM_MANUAL_PULSE_MS + 150);
+  try {
+    await sendManualHttp(direction, {
+      durationMs: SLAM_MANUAL_PULSE_MS,
+      source: "slam",
+    });
+  } finally {
+    clearTimeout(stopTimer);
+    if (state.manualDirection === direction) {
+      sendStopNow(true).catch((error) => console.warn("slam pulse stop failed", error));
+    }
+    state.slamManualPulseInFlight = false;
+  }
 }
 
 async function sendManualHoldRefresh(direction) {
