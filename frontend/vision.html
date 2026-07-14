@@ -21,45 +21,52 @@
           <div class="connect-strip"><input id="serverInput" value="" placeholder="ws://当前页面主机/ws" /><button class="neon-btn primary" id="connectBtn">连接</button><button class="neon-btn ghost" id="disconnectBtn">断开</button></div>
         </header>
         <section class="vision-layout">
-          <article class="panel glow-panel">
-            <div class="panel-title"><h2>实时画面</h2><p id="cameraStatus">等待摄像头</p></div>
-            <div class="camera-toolbar">
+          <article class="panel glow-panel vision-camera-panel">
+            <div class="panel-title">
+              <h2>实时画面</h2>
+              <p id="cameraStatus">等待摄像头</p>
+            </div>
+            <div class="camera-toolbar vision-camera-toolbar">
               <select id="cameraSelect"></select>
               <button class="neon-btn primary" id="reconnectCarBtn">重连小车</button>
               <button class="neon-btn primary" id="cameraAutoBtn">自动连接</button>
               <button class="neon-btn ghost" id="cameraNextBtn">下一个</button>
               <button class="neon-btn ghost" id="cameraStopBtn">停止</button>
             </div>
-            <div class="gesture-toolbar">
-              <button class="neon-btn primary" id="gestureToggleBtn">开启手势控制</button>
-              <label>速度<input id="gestureSpeedInput" type="number" min="0.08" max="0.16" step="0.01" value="0.10" /></label>
-            </div>
-            <div class="gesture-pills">
-              <span>握拳 停止</span><span>1 后退</span><span>2 左转</span><span>3 右转</span><span>五指 前进</span>
-            </div>
-            <div class="video-frame gesture-video-frame">
+            <div class="video-frame vision-live-frame">
               <img id="visionImage" alt="视觉检测画面" src="/assets/sample-detection.svg" />
-              <canvas id="gestureCanvas"></canvas>
-              <div class="gesture-lock" id="gestureStatus">手势控制未开启</div>
             </div>
-            <div class="camera-toolbar">
-              <select id="visionTargetSelect" multiple size="4" aria-label="检测目标选择"></select>
-              <button class="neon-btn primary" id="detectBtn">检测一次</button>
-              <button class="neon-btn primary" id="visionStartBtn">开始检测</button>
-              <button class="neon-btn ghost" id="visionStopBtn">停止检测</button>
-            </div>
-            <div class="panel-title compact-title"><h2>检测结果图</h2><p id="detectionImageStatus">等待检测</p></div>
-            <div class="detection-frame"><img id="detectionImage" alt="YOLO 检测结果图" src="/assets/sample-detection.svg" /></div>
-            <p class="subhead" id="visionModeHint">检测任务默认从原生视频流取图，不占用摄像头设备。</p>
           </article>
-          <article class="panel glow-panel">
+          <article class="panel glow-panel vision-detect-panel">
+            <div class="panel-title">
+              <h2>检测控制</h2>
+              <p id="visionModeHint">开始检测后切到带框视频，识别结果变化时记录事件。</p>
+            </div>
+            <div class="vision-action-grid">
+              <label class="vision-field">模式<select id="visionModeSelect"></select></label>
+              <label class="vision-field vision-target-field" id="visionTargetField">
+                <span>搜索目标 <small id="visionTargetHint">可多选，命中任意目标会生成报告</small></span>
+                <select id="visionTargetSelect" multiple size="5" aria-label="搜索目标多选"></select>
+              </label>
+              <div class="vision-button-row">
+                <button class="neon-btn primary" id="detectBtn">检测一次</button>
+                <button class="neon-btn primary" id="visionStartBtn">开始检测</button>
+                <button class="neon-btn ghost" id="visionStopBtn">停止检测</button>
+              </div>
+            </div>
+            <div class="panel-title compact-title">
+              <h2>检测结果图</h2>
+              <p id="detectionImageStatus">等待检测</p>
+            </div>
+            <div class="detection-frame"><img id="detectionImage" alt="YOLO 检测结果图" src="/assets/sample-detection.svg" /></div>
+          </article>
+          <article class="panel glow-panel vision-events-panel">
             <div class="panel-title"><h2>检测事件</h2><p>类别、置信度、时间戳</p></div>
             <div class="timeline" id="visionList"></div>
           </article>
         </section>
       </main>
     </div>
-    <script src="/assets/vendor/mediapipe/hands/hands.js"></script>
     <script src="/assets/js/app.js?v=manual-hold-v1"></script>
   </body>
 </html>

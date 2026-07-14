@@ -20,9 +20,12 @@ data/captures/*
 data/slam_maps/*
 !data/slam_maps/.gitkeep
 docs/presentation/
-vision/weights/
+vision/weights/*
+!vision/weights/.gitkeep
 vision/datasets/
 vision/runs/
+third_party/yolov5-7.0/
+third_party/*.zip
 node_modules/
 dist/
 .DS_Store

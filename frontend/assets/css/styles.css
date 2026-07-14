@@ -337,6 +337,19 @@ select:focus {
   gap: 14px;
 }
 
+.vision-layout {
+  grid-template-columns: minmax(520px, 1.35fr) minmax(340px, 0.65fr);
+  align-items: start;
+}
+
+.vision-camera-panel {
+  min-height: 0;
+}
+
+.vision-events-panel {
+  grid-column: 1 / -1;
+}
+
 .voice-layout {
   margin-top: 14px;
 }
@@ -1093,6 +1106,10 @@ pre#cruiseCommandLog {
   background: #030814;
 }
 
+.vision-live-frame {
+  min-height: 420px;
+}
+
 .video-frame img {
   width: 100%;
   height: 100%;
@@ -1157,6 +1174,10 @@ pre#cruiseCommandLog {
   background: #030814;
 }
 
+.vision-detect-panel .detection-frame {
+  aspect-ratio: 4 / 3;
+}
+
 .detection-frame img {
   width: 100%;
   height: 100%;
@@ -1171,12 +1192,75 @@ pre#cruiseCommandLog {
   margin-bottom: 12px;
 }
 
+.vision-camera-toolbar {
+  grid-template-columns: minmax(220px, 1fr) repeat(4, auto);
+}
+
+.vision-action-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.vision-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vision-field span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.vision-field small {
+  color: var(--muted-2);
+  font-size: 11px;
+  text-align: right;
+}
+
+.vision-field select {
+  min-height: 38px;
+}
+
+.vision-target-field select {
+  min-height: 132px;
+}
+
+.vision-action-grid .vision-field select {
+  min-height: 38px;
+}
+
+.vision-action-grid .vision-target-field select {
+  min-height: 150px;
+}
+
+.vision-button-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.vision-button-row .neon-btn {
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .gesture-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(130px, 170px) minmax(120px, 150px);
+  grid-template-columns: auto minmax(130px, 170px);
   gap: 10px;
   margin-bottom: 10px;
   align-items: stretch;
+}
+
+.gesture-camera-toolbar {
+  grid-template-columns: minmax(160px, 1fr) repeat(3, auto);
 }
 
 .gesture-toolbar label {
@@ -1232,6 +1316,14 @@ pre#cruiseCommandLog {
   .slam-layout,
   .cruise-layout {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .vision-camera-toolbar {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .vision-camera-toolbar select {
+    grid-column: 1 / -1;
   }
 }
 

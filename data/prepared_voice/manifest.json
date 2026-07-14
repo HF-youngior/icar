@@ -1,0 +1,62 @@
+{
+  "version": "prepared-voice-v1",
+  "codec": "wav",
+  "voices": {
+    "wake_ack": {
+      "text": "我在的，老大",
+      "description": "用户只是在呼唤小比时使用。",
+      "filename": "wake_ack.wav",
+      "exposed_to_llm": true,
+      "sha256": "051552d49f6cd3de1bf357e1ccebd047a6fd2ad915a8b87b68f7cef2405ecadc",
+      "bytes": 56044
+    },
+    "unknown": {
+      "text": "小比不会",
+      "description": "用户要求超出当前能力范围时使用。",
+      "filename": "unknown.wav",
+      "exposed_to_llm": true,
+      "sha256": "bcef831ad9a25ac813cf7327132ac477e83495d68a18583af365031b50a3636c",
+      "bytes": 46444
+    },
+    "ok": {
+      "text": "好的",
+      "description": "已经收到用户请求时使用。",
+      "filename": "ok.wav",
+      "exposed_to_llm": true,
+      "sha256": "b49522bfa5ee53141be808265018668c8fd184eb69cfdc45a4bbba4aaf67e4a0",
+      "bytes": 32044
+    },
+    "done": {
+      "text": "小比完成了",
+      "description": "动作或任务完成后使用。",
+      "filename": "done.wav",
+      "exposed_to_llm": true,
+      "sha256": "6195c3bf9c0745fad6b5a3e653ffd56500cae5582538a3c95ea24bdfd9bd36f9",
+      "bytes": 52524
+    },
+    "unreadable": {
+      "text": "小比没有听清",
+      "description": "当用户请求不能被理解时使用。",
+      "filename": "unreadable.wav",
+      "exposed_to_llm": true,
+      "sha256": "f636616014636fcacc48352ecaa3402ad63fc0b2acbda471316c29ac0f2029d5",
+      "bytes": 58604
+    },
+    "low_battery": {
+      "text": "小比电量有点低",
+      "description": "小车或后端检测到低电量时主动播报。",
+      "filename": "low_battery.wav",
+      "exposed_to_llm": false,
+      "sha256": "6c64b90066369a1e39ff175203743c36ca7818e757bf067f48a5fd9c4e3d3c90",
+      "bytes": 63724
+    },
+    "network_unstable": {
+      "text": "小比网络好像不太稳定",
+      "description": "连接腾讯云、DeepSeek 或小车通信失败时播报。",
+      "filename": "network_unstable.wav",
+      "exposed_to_llm": false,
+      "sha256": "aeb9a260d798a36d4ba4d3b1d6defd62a261873fd09dd4ee886bf25883d573e5",
+      "bytes": 84844
+    }
+  }
+}

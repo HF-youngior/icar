@@ -28,14 +28,11 @@ class SensorServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service._level("light", 90), "warning")
         self.assertEqual(self.service._level("light", 40), "danger")
 
-    async def test_alarm_is_deduplicated_until_sensor_returns_normal(self) -> None:
-        await self.service._maybe_alarm("gas", 0.4, "warning")
-        await self.service._maybe_alarm("gas", 0.42, "warning")
-        self.assertEqual(len(self.state.alarms), 1)
+    async def test_generate_once_updates_sensor_levels_without_alarms(self) -> None:
+        await self.service.generate_once()
 
-        await self.service._maybe_alarm("gas", 0.08, "normal")
-        await self.service._maybe_alarm("gas", 0.41, "warning")
-        self.assertEqual(len(self.state.alarms), 2)
+        self.assertTrue(self.state.sensors)
+        self.assertEqual(self.state.alarms, [])
 
 
 if __name__ == "__main__":

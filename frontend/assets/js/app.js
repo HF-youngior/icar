@@ -34,9 +34,14 @@ const state = {
   },
   visionControl: {
     running: false,
+    mode: "normal",
+    modeTouched: false,
+    modes: [],
     targets: ["person"],
+    targetsTouched: false,
     options: [],
     streamUrl: "",
+    annotatedStreamUrl: "",
   },
   slam: {
     maps: [],
@@ -85,6 +90,7 @@ const state = {
     audioContext: null,
     source: null,
     processor: null,
+    sink: null,
     chunks: [],
     recording: false,
     uploading: false,
@@ -295,7 +301,7 @@ function renderDashboard() {
     })),
     ...state.snapshot.vision.slice(0, 3).map((item) => ({
       title: `视觉检测：${item.label_zh || item.label}`,
-      meta: `${item.timestamp} · 置信度 ${Math.round((item.confidence || 0) * 100)}%`,
+      meta: visionEventMeta(item),
       level: item.risk === "warning" ? "warning" : "normal",
     })),
     ...state.snapshot.reports.slice(0, 3).map((item) => ({
@@ -311,6 +317,7 @@ function renderDashboard() {
 
 function renderControl() {
   renderCommon();
+  renderGestureStatus();
   renderVoice();
 }
 
@@ -348,15 +355,29 @@ function renderVisionPage() {
   const events = state.snapshot.vision || [];
   const visionControl = state.snapshot.vision_control || {};
   state.visionControl.running = !!visionControl.running;
-  state.visionControl.targets = visionControl.targets || state.visionControl.targets || ["person"];
+  if (state.visionControl.running || !state.visionControl.modeTouched) {
+    state.visionControl.mode = visionControl.mode || state.visionControl.mode || "normal";
+  }
+  state.visionControl.modes = visionControl.modes || state.visionControl.modes || [];
+  if (state.visionControl.running || !state.visionControl.targetsTouched) {
+    state.visionControl.targets = visionControl.targets || state.visionControl.targets || ["person"];
+  }
   state.visionControl.streamUrl = visionControl.stream_url || state.visionControl.streamUrl || "";
+  state.visionControl.annotatedStreamUrl = visionControl.annotated_stream_url || state.visionControl.annotatedStreamUrl || "";
   syncVisionTargetSelect();
-  setText("visionModeHint", state.visionControl.running
-    ? `检测中：${selectedVisionTargetLabels().join("、")} · 视频继续走原生流`
-    : `待机中：可选择人员/宠物等目标后开始检测，视频继续走原生流`);
+  const needsTargets = visionModeNeedsTargets();
+  const hasVisionOptions = (state.visionControl.options || []).length > 0;
+  updateVisionTargetHint();
+  setText("visionModeHint", needsTargets && !hasVisionOptions
+    ? "YOLO 类别加载失败"
+    : (state.visionControl.running
+      ? `${visionModeLabel()}运行中：${selectedVisionTargetLabels().join("、")}`
+      : visionModeDescription()));
   if (events.length) {
     const latest = events[0];
-    setText("visionSummary", `${latest.label_zh || latest.label} · ${Math.round((latest.confidence || 0) * 100)}%`);
+    setText("visionSummary", isClearVisionEvent(latest)
+      ? "未发现异常"
+      : `${latest.label_zh || latest.label} · ${Math.round((latest.confidence || 0) * 100)}%`);
     renderDetectionImage(latest);
   } else {
     renderDetectionImage(null);
@@ -365,12 +386,26 @@ function renderVisionPage() {
     list.innerHTML = events.length
       ? events.slice(0, 12).map((event) => renderTimelineItem({
         title: event.label_zh || event.label,
-        meta: `${event.timestamp || ""} · 置信度 ${Math.round((event.confidence || 0) * 100)}% · ${(event.target_filter || []).join("/") || "all"} · ${event.source || ""}`,
+        meta: visionEventMeta(event),
         level: event.risk === "warning" ? "warning" : "normal",
       })).join("")
       : `<div class="timeline-item"><strong>暂无检测</strong><span>选择检测目标后点击“检测一次”或“开始检测”</span></div>`;
   }
   renderGestureStatus();
+}
+
+function isClearVisionEvent(event) {
+  return String(event?.label || "").trim().toLowerCase() === "clear";
+}
+
+function visionEventMeta(event) {
+  const timestamp = event?.timestamp || "";
+  const targets = (event?.target_filter || []).join("/") || "all";
+  const source = event?.source || "";
+  const result = isClearVisionEvent(event)
+    ? "当前帧未命中目标"
+    : `置信度 ${Math.round((event?.confidence || 0) * 100)}%`;
+  return `${timestamp} · ${result} · ${targets} · ${source}`;
 }
 
 function renderDetectionImage(event) {
@@ -386,6 +421,22 @@ function renderDetectionImage(event) {
   setText("detectionImageStatus", `${label} · ${Math.round((event.confidence || 0) * 100)}%`);
 }
 
+function annotatedVisionStreamUrl(targets = selectedVisionTargets()) {
+  const query = new URLSearchParams({ targets: targets.join(",") });
+  return `/api/vision/annotated-stream?${query.toString()}`;
+}
+
+function showAnnotatedVisionStream(targets = selectedVisionTargets()) {
+  const image = $("visionImage");
+  if (!image) return;
+  stopGestureControl();
+  state.camera.active = false;
+  state.camera.currentUrl = "";
+  image.onload = () => setText("cameraStatus", "YOLO 带框视频已连接");
+  image.onerror = () => setText("cameraStatus", "YOLO 带框视频不可用，请检查小车 8765 服务");
+  image.src = withCacheBust(annotatedVisionStreamUrl(targets));
+}
+
 function renderAlarmsPage() {
   const list = $("alarmList");
   const alarms = state.snapshot.alarms || [];
@@ -397,15 +448,28 @@ function renderAlarmsPage() {
       <div class="alarm-item level-${alarm.level || "normal"}">
         <div>
           <strong>${escapeHtml(alarm.message)}</strong>
-          <span>${alarm.timestamp || ""} · ${alarm.source || ""} · ${alarm.status || ""}</span>
+          <span>${alarm.timestamp || ""} · ${alarm.source || ""}${alarmVisionModeLabel(alarm)} · ${alarm.status || ""}</span>
         </div>
         <button class="neon-btn ghost" data-alarm="${alarm.alarm_id}" ${alarm.status === "confirmed" ? "disabled" : ""}>确认</button>
       </div>
     `).join("")
-    : `<div class="alarm-item"><div><strong>暂无告警</strong><span>传感器、视觉、通信和急停事件会显示在这里</span></div></div>`;
+    : `<div class="alarm-item"><div><strong>暂无告警</strong><span>视觉、通信、导航和急停事件会显示在这里</span></div></div>`;
   list.querySelectorAll("[data-alarm]").forEach((btn) => {
     btn.addEventListener("click", () => send("alarm_confirm", { alarm_id: btn.dataset.alarm, operator: "web" }));
   });
+}
+
+function alarmVisionModeLabel(alarm) {
+  const label = alarm?.metadata?.vision_mode_label || alarm?.metadata?.mode_label;
+  const mode = alarm?.metadata?.vision_mode || alarm?.metadata?.mode;
+  const fallback = mode ? ({
+    normal: "普通检测模式",
+    travel: "旅游安防模式",
+    care: "看护检测模式",
+    search: "搜索模式",
+  }[mode] || mode) : "";
+  const text = label || fallback;
+  return alarm?.source === "vision" && text ? ` · ${escapeHtml(text)}` : "";
 }
 
 function renderReportsPage() {
@@ -467,7 +531,7 @@ async function reconnectCar() {
     const cameraReady = ports.camera_6500 || ports.camera_8080;
     setText("robotError", `重连成功：6000=${ports.control_6000 ? "open" : "--"}，6500=${ports.camera_6500 ? "open" : "--"}，8080=${ports.camera_8080 ? "open" : "--"}`);
     setText("cameraStatus", cameraReady ? "小车摄像头服务已恢复" : "小车摄像头端口未打开");
-    if (page === "vision") {
+    if (isGesturePage()) {
       await loadCameraCandidates();
       startCameraAuto();
     }
@@ -575,15 +639,22 @@ async function loadVisionStatus() {
   try {
     const data = await getJson("/api/vision/status");
     state.visionControl.running = !!data.running;
+    state.visionControl.mode = data.mode || state.visionControl.mode || "normal";
+    state.visionControl.modes = data.modes || state.visionControl.modes || [];
     state.visionControl.options = data.options || [];
     state.visionControl.targets = reconcileVisionTargets(data.targets || state.visionControl.targets);
     state.visionControl.streamUrl = data.stream_url || "";
+    state.visionControl.annotatedStreamUrl = data.annotated_stream_url || "";
     state.snapshot.vision_control = {
       running: state.visionControl.running,
+      mode: state.visionControl.mode,
+      modes: state.visionControl.modes,
       targets: state.visionControl.targets,
       source: data.source || "camera_stream",
       stream_url: state.visionControl.streamUrl,
+      annotated_stream_url: state.visionControl.annotatedStreamUrl,
     };
+    populateVisionModeOptions();
     populateVisionTargetOptions();
     renderVisionPage();
   } catch (error) {
@@ -591,24 +662,93 @@ async function loadVisionStatus() {
   }
 }
 
+function populateVisionModeOptions() {
+  const select = $("visionModeSelect");
+  if (!select) return;
+  const modes = state.visionControl.modes?.length
+    ? state.visionControl.modes
+    : [
+      { id: "normal", label: "普通检测模式", enabled: true },
+      { id: "travel", label: "旅游安防模式", enabled: true },
+      { id: "care", label: "看护检测模式", enabled: true },
+      { id: "search", label: "搜索模式", enabled: true },
+    ];
+  select.innerHTML = modes.map((mode) => (
+    `<option value="${escapeHtml(mode.id)}" ${mode.enabled === false ? "disabled" : ""}>${escapeHtml(mode.label)}</option>`
+  )).join("");
+  if (!modes.some((mode) => mode.id === state.visionControl.mode && mode.enabled !== false)) {
+    state.visionControl.mode = "normal";
+  }
+  select.value = state.visionControl.mode;
+}
+
 function populateVisionTargetOptions() {
   const select = $("visionTargetSelect");
+  const field = $("visionTargetField");
   if (!select) return;
+  const needsTargets = visionModeNeedsTargets();
+  if (field) field.style.display = needsTargets ? "" : "none";
+  if (!needsTargets) {
+    select.innerHTML = "";
+    state.visionControl.targets = [];
+    state.visionControl.targetsTouched = false;
+    const detectButton = $("detectBtn");
+    const startButton = $("visionStartBtn");
+    if (detectButton) detectButton.disabled = false;
+    if (startButton) startButton.disabled = false;
+    syncVisionTargetSelect();
+    updateVisionTargetHint();
+    return;
+  }
   const options = state.visionControl.options || [];
   state.visionControl.targets = reconcileVisionTargets(state.visionControl.targets);
-  select.innerHTML = options.map((option) => (
-    `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label_zh || option.label)}</option>`
-  )).join("");
+  if (!options.length) {
+    select.innerHTML = `<option disabled>YOLO 类别加载失败</option>`;
+  } else {
+    select.innerHTML = options.map((option) => (
+      `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label_zh || option.label)}</option>`
+    )).join("");
+  }
+  const disabled = !options.length;
+  const detectButton = $("detectBtn");
+  const startButton = $("visionStartBtn");
+  if (detectButton) detectButton.disabled = disabled;
+  if (startButton) startButton.disabled = disabled;
+  if (disabled) setText("visionModeHint", "YOLO 类别加载失败");
   syncVisionTargetSelect();
+  updateVisionTargetHint();
+}
+
+function visionModeLabel() {
+  const mode = (state.visionControl.modes || []).find((item) => item.id === state.visionControl.mode);
+  return mode?.label || {
+    normal: "普通检测模式",
+    travel: "旅游安防模式",
+    care: "看护检测模式",
+    search: "搜索模式",
+  }[state.visionControl.mode] || "普通检测模式";
+}
+
+function visionModeDescription() {
+  const mode = state.visionControl.mode || "normal";
+  if (mode === "travel") return "旅游安防模式：固定检测人员，检测到人员时记录告警";
+  if (mode === "care") return "看护检测模式：固定检测人员，连续疑似摔倒时记录告警";
+  if (mode === "search") return "搜索模式：可多选目标，检测到任意一个目标时生成报告";
+  return "普通检测模式：检测全部类别，只记录检测事件，不触发告警";
+}
+
+function visionModeNeedsTargets() {
+  return (state.visionControl.mode || "normal") === "search";
 }
 
 function reconcileVisionTargets(targets) {
+  if (!visionModeNeedsTargets()) return [];
   const options = state.visionControl.options || [];
   const optionIds = new Set(options.map((option) => option.id));
   const selected = (targets || []).filter((target) => optionIds.has(target));
   if (selected.length) return selected;
   if (options.length) return [options[0].id];
-  return ["person"];
+  return [];
 }
 
 function syncVisionTargetSelect() {
@@ -618,9 +758,29 @@ function syncVisionTargetSelect() {
   Array.from(select.options).forEach((option) => {
     option.selected = selected.has(option.value);
   });
+  updateVisionTargetHint();
+}
+
+function updateVisionTargetHint() {
+  const hint = $("visionTargetHint");
+  if (!hint) return;
+  if (!visionModeNeedsTargets()) {
+    hint.textContent = "当前模式检测全部类别";
+    return;
+  }
+  const options = state.visionControl.options || [];
+  if (!options.length) {
+    hint.textContent = "YOLO 类别加载失败";
+    return;
+  }
+  const selected = selectedVisionTargets();
+  hint.textContent = selected.length
+    ? `已选 ${selected.length} 项，命中任意目标会生成报告`
+    : "可多选，命中任意目标会生成报告";
 }
 
 function selectedVisionTargets() {
+  if (!visionModeNeedsTargets()) return [];
   const select = $("visionTargetSelect");
   const values = select
     ? Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean)
@@ -629,16 +789,24 @@ function selectedVisionTargets() {
 }
 
 function selectedVisionTargetLabels() {
+  if ((state.visionControl.mode || "normal") === "travel") return ["人员、烟雾、火灾"];
+  if ((state.visionControl.mode || "normal") === "care") return ["人员姿态、烟雾、火灾"];
+  if (!visionModeNeedsTargets()) return ["全部类别"];
   const select = $("visionTargetSelect");
   const labels = select
     ? Array.from(select.selectedOptions).map((option) => option.textContent?.trim()).filter(Boolean)
     : [];
-  return labels.length ? labels : ["人员"];
+  return labels.length ? labels : ["类别加载失败"];
 }
 
 async function detectVisionOnce() {
+  const targets = selectedVisionTargets();
+  if (visionModeNeedsTargets() && !targets.length) {
+    setText("visionSummary", "YOLO 类别加载失败");
+    return;
+  }
   try {
-    const result = await postJson("/api/vision/detect", { targets: selectedVisionTargets() });
+    const result = await postJson("/api/vision/detect", { targets, mode: state.visionControl.mode });
     state.snapshot.vision.unshift(result);
     state.snapshot.vision = state.snapshot.vision.slice(0, 20);
     renderVisionPage();
@@ -649,12 +817,22 @@ async function detectVisionOnce() {
 }
 
 async function startVisionDetection() {
+  const targets = selectedVisionTargets();
+  if (visionModeNeedsTargets() && !targets.length) {
+    setText("visionSummary", "YOLO 类别加载失败");
+    return;
+  }
   try {
-    const result = await postJson("/api/vision/start", { targets: selectedVisionTargets() });
+    const result = await postJson("/api/vision/start", { targets, mode: state.visionControl.mode });
     state.visionControl.running = !!result.running;
+    state.visionControl.mode = result.mode || state.visionControl.mode;
+    state.visionControl.modeTouched = false;
+    state.visionControl.modes = result.modes || state.visionControl.modes;
     state.visionControl.options = result.options || state.visionControl.options;
     state.visionControl.targets = reconcileVisionTargets(result.targets || state.visionControl.targets);
+    state.visionControl.targetsTouched = false;
     state.snapshot.vision_control = result;
+    showAnnotatedVisionStream(state.visionControl.targets);
     renderVisionPage();
   } catch (error) {
     console.warn("vision start failed", error);
@@ -662,13 +840,27 @@ async function startVisionDetection() {
   }
 }
 
+async function handleVisionModeChange() {
+  state.visionControl.mode = $("visionModeSelect")?.value || "normal";
+  state.visionControl.modeTouched = true;
+  state.visionControl.targetsTouched = false;
+  populateVisionTargetOptions();
+  renderVisionPage();
+  if (state.visionControl.running) {
+    await startVisionDetection();
+  }
+}
+
 async function stopVisionDetection() {
   try {
     const result = await postJson("/api/vision/stop", {});
     state.visionControl.running = !!result.running;
+    state.visionControl.mode = result.mode || state.visionControl.mode;
+    state.visionControl.modes = result.modes || state.visionControl.modes;
     state.visionControl.options = result.options || state.visionControl.options;
     state.visionControl.targets = reconcileVisionTargets(result.targets || state.visionControl.targets);
     state.snapshot.vision_control = result;
+    startCameraAuto();
     renderVisionPage();
   } catch (error) {
     console.warn("vision stop failed", error);
@@ -776,8 +968,12 @@ const GESTURE_REPEAT_INTERVAL_MS = 220;
 const TURN_PULSE_MS = 450;
 const SLAM_MANUAL_PULSE_MS = 500;
 
+function isGesturePage() {
+  return page === "control" || page === "vision";
+}
+
 function renderGestureStatus() {
-  if (page !== "vision") return;
+  if (!isGesturePage()) return;
   const button = $("gestureToggleBtn");
   if (button) {
     button.textContent = state.gesture.enabled ? "关闭手势控制" : "开启手势控制";
@@ -869,7 +1065,7 @@ async function toggleGestureControl() {
 }
 
 async function startGestureControl() {
-  if (page !== "vision") return;
+  if (!isGesturePage()) return;
   state.gesture.loading = true;
   renderGestureStatus();
   setGestureStatus("正在加载 MediaPipe Hands...", "warning");
@@ -1959,30 +2155,38 @@ async function startVoiceListening() {
       video: false,
     });
     const audioContext = new AudioCtx();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const sink = audioContext.createGain();
+    sink.gain.value = 0;
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    processor.connect(sink);
+    sink.connect(audioContext.destination);
     processor.onaudioprocess = handleVoiceAudio;
 
     state.voice.stream = stream;
     state.voice.audioContext = audioContext;
     state.voice.source = source;
     state.voice.processor = processor;
+    state.voice.sink = sink;
     state.voice.listening = true;
     state.voice.transcript = "";
-    state.voice.llmOutput = "";
+    state.voice.llmOutput = "本地监听已启动，等待说话。";
     state.voice.level = 0;
     setVoiceStatus("listening");
   } catch (error) {
     console.warn("voice start failed", error);
-    state.voice.llmOutput = "麦克风启动失败，请检查浏览器权限。";
+    state.voice.llmOutput = `麦克风启动失败：${error.message || error}`;
     setVoiceStatus("error");
   }
 }
 
 function stopVoiceListening() {
   finalizeVoiceUtterance(true);
+  state.voice.sink?.disconnect();
   state.voice.processor?.disconnect();
   state.voice.source?.disconnect();
   state.voice.audioContext?.close();
@@ -1991,6 +2195,7 @@ function stopVoiceListening() {
   state.voice.audioContext = null;
   state.voice.source = null;
   state.voice.processor = null;
+  state.voice.sink = null;
   state.voice.listening = false;
   state.voice.recording = false;
   state.voice.uploading = false;
@@ -3055,8 +3260,10 @@ function bindEvents() {
   $("visionStopBtn")?.addEventListener("click", stopVisionDetection);
   $("visionTargetSelect")?.addEventListener("change", () => {
     state.visionControl.targets = selectedVisionTargets();
+    state.visionControl.targetsTouched = true;
     renderVisionPage();
   });
+  $("visionModeSelect")?.addEventListener("change", handleVisionModeChange);
   $("lightToggleBtn")?.addEventListener("click", toggleLight);
   $("buzzerBtn")?.addEventListener("click", playBuzzerCue);
   $("voicePlayBtn")?.addEventListener("click", playVoiceCue);
@@ -3095,8 +3302,10 @@ function bindEvents() {
 
 async function initPage() {
   await loadSnapshot();
-  if (page === "vision") {
+  if (isGesturePage()) {
     await loadCameraCandidates();
+  }
+  if (page === "vision") {
     startCameraAuto();
   }
   if (page === "navigation") {

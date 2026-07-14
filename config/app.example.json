@@ -39,7 +39,13 @@
     "detect_path": "/detect",
     "health_path": "/health",
     "stream_url": "",
-    "request_timeout_sec": 8.0
+    "request_timeout_sec": 8.0,
+    "hazard_enabled": false,
+    "hazard_yolo_root": "",
+    "hazard_weights": "",
+    "hazard_data": "",
+    "hazard_conf": 0.25,
+    "hazard_labels": ["smoke", "fire"]
   },
   "points_file": "config/points.json",
   "routes_file": "config/routes.json",
@@ -47,5 +53,5 @@
   "captures_dir": "data/captures",
   "sensor_tick_sec": 1.5,
   "navigation_tick_sec": 0.8,
-  "vision_tick_sec": 5.0
+  "vision_tick_sec": 3.0
 }

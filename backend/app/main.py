@@ -44,7 +44,7 @@ sensors = SensorService(config, state)
 vision = VisionService(config, state)
 voice = VoicePipeline()
 tts = TencentTtsService()
-mcp_tools = McpToolService(state, adapter, tts)
+mcp_tools = McpToolService(state, adapter, tts, runtime)
 voice_records = VoiceInteractionStore()
 slam_runtime = SlamRuntimeManager(config)
 manual_control_lock = asyncio.Lock()
@@ -65,6 +65,11 @@ async def execute_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> di
             arguments.get("direction", ""),
             float(arguments.get("meters", 0)),
         )
+    if tool_name == "turn_degrees":
+        return await mcp_tools.turn_degrees(
+            arguments.get("direction", ""),
+            int(arguments.get("degrees", 0)),
+        )
     if tool_name == "speak":
         return await mcp_tools.speak(
             arguments.get("mode", ""),
@@ -73,6 +78,15 @@ async def execute_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> di
         )
     if tool_name == "speak_text":
         return await mcp_tools.speak_text(arguments.get("text", ""))
+    if tool_name == "set_light":
+        return await mcp_tools.set_light(
+            arguments.get("enabled", False),
+            r=int(arguments.get("r", 38)),
+            g=int(arguments.get("g", 244)),
+            b=int(arguments.get("b", 255)),
+        )
+    if tool_name == "beep":
+        return await mcp_tools.beep(int(arguments.get("duration_ms", 260)))
 
     raise ValueError(f"Unsupported tool requested by LLM: {tool_name}")
 
@@ -136,6 +150,8 @@ async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None) -> list[
 def _prepared_key_for_reply(reply: str) -> str:
     text = str(reply).strip()
     for key, voice_item in mcp_tools.prepared_voices.items():
+        if not voice_item.get("exposed_to_llm", False):
+            continue
         if text == voice_item.get("text"):
             return key
     return ""
@@ -282,7 +298,8 @@ async def car_reconnect() -> dict[str, Any]:
             last_error=None,
             last_command="reconnect",
         )
-        return {"ok": True, "adapter": adapter.name, "runtime": recovery}
+        prepared_voice_sync = await mcp_tools.sync_prepared_voices()
+        return {"ok": True, "adapter": adapter.name, "runtime": recovery, "prepared_voice_sync": prepared_voice_sync}
     except Exception as exc:
         logger.exception("car reconnect failed")
         detail = str(exc) or "car control port is not reachable"
@@ -425,6 +442,16 @@ async def mcp_move_distance(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/mcp/tools/turn-degrees")
+async def mcp_turn_degrees(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.turn_degrees(payload.get("direction", ""), int(payload.get("degrees", 0)))
+    except Exception as exc:
+        logger.exception("mcp turn_degrees failed")
+        await state.add_alarm("mcp_tool", "warning", f"工具转向失败：{exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/mcp/tools/speak")
 async def mcp_speak(payload: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -446,6 +473,31 @@ async def mcp_speak_text(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("mcp speak_text failed")
         await state.add_alarm("mcp_tool", "warning", f"TTS task submit failed: {exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/set-light")
+async def mcp_set_light(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.set_light(
+            payload.get("enabled", False),
+            r=int(payload.get("r", 38)),
+            g=int(payload.get("g", 244)),
+            b=int(payload.get("b", 255)),
+        )
+    except Exception as exc:
+        logger.exception("mcp set_light failed")
+        await state.add_alarm("mcp_tool", "warning", f"Light tool failed: {exc}", "backend")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mcp/tools/beep")
+async def mcp_beep(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await mcp_tools.beep(int(payload.get("duration_ms", 260)))
+    except Exception as exc:
+        logger.exception("mcp beep failed")
+        await state.add_alarm("mcp_tool", "warning", f"Buzzer tool failed: {exc}", "backend")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -559,6 +611,15 @@ async def auxiliary_control(payload: dict[str, Any]) -> dict[str, Any]:
         await state.update_robot(connected=False, mode="offline", last_error=str(exc))
         await state.add_alarm("auxiliary_control", "warning", f"auxiliary control failed: {exc}", "backend")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+async def _vision_auxiliary_callback(action: str, values: dict[str, Any]) -> dict[str, Any]:
+    result = await adapter.auxiliary_control(action, **values)
+    await state.update_robot(connected=True, last_command=f"vision_aux:{action}", last_error=None)
+    return result
+
+
+vision.auxiliary_callback = _vision_auxiliary_callback
 
 
 @app.post("/api/control/emergency-stop")
@@ -836,7 +897,8 @@ async def slam_stop() -> dict[str, Any]:
 
 @app.post("/api/vision/detect")
 async def vision_detect(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    return await vision.detect_once((payload or {}).get("targets"))
+    body = payload or {}
+    return await vision.detect_once(body.get("targets"), body.get("mode"))
 
 
 @app.get("/api/vision/status")
@@ -850,13 +912,18 @@ async def vision_status() -> dict[str, Any]:
         "stream_url": status["stream_url"],
         "backend_mode": status["backend_mode"],
         "service_url": status["service_url"],
+        "annotated_stream_url": status["annotated_stream_url"],
+        "mode": status["mode"],
+        "modes": status["modes"],
+        "backend_hazard": status["backend_hazard"],
         "options": vision.available_targets(),
     }
 
 
 @app.post("/api/vision/start")
 async def vision_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    status = await vision.start_detection((payload or {}).get("targets"))
+    body = payload or {}
+    status = await vision.start_detection(body.get("targets"), body.get("mode"))
     return {"ok": True, **status, "options": vision.available_targets()}
 
 
@@ -864,6 +931,35 @@ async def vision_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
 async def vision_stop() -> dict[str, Any]:
     status = await vision.stop_detection()
     return {"ok": True, **status, "options": vision.available_targets()}
+
+
+@app.get("/api/vision/annotated-stream")
+def vision_annotated_stream(targets: str | None = None) -> StreamingResponse:
+    selected = [item.strip().lower() for item in (targets or "").split(",") if item.strip()]
+    if not selected:
+        selected = vision.status()["targets"]
+    target_url = vision.remote_annotated_stream_url(selected)
+    try:
+        request = UrlRequest(target_url, headers={"User-Agent": "iCar-Web/1.0"})
+        upstream = urlopen(request, timeout=8)
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        logger.warning("annotated vision stream unavailable: %s -> %s", target_url, exc)
+        raise HTTPException(status_code=502, detail=f"Annotated vision stream unavailable: {target_url}") from exc
+
+    def generate():
+        try:
+            with upstream:
+                while True:
+                    chunk = upstream.read(8192)
+                    if not chunk:
+                        break
+                    yield chunk
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            logger.warning("annotated vision stream failed: %s -> %s", target_url, exc)
+            return
+
+    media_type = upstream.headers.get("Content-Type") or "multipart/x-mixed-replace; boundary=frame"
+    return StreamingResponse(generate(), media_type=media_type, headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/voice/process")
@@ -886,7 +982,7 @@ async def voice_process(request: Request) -> dict[str, Any]:
                 tool_executions.append(fallback_voice)
         elif result.get("wake_phrase_matched") and result.get("llm_enabled"):
             tool_executions.append(await mcp_tools.speak("preset", preset_key="unknown"))
-            result["llm_output"] = "不知道"
+            result["llm_output"] = "我不会"
         elif result.get("wake_phrase_matched") and not result.get("llm_enabled"):
             tool_executions.append(await mcp_tools.speak("preset", preset_key="wake_ack"))
             result["llm_output"] = "我在"

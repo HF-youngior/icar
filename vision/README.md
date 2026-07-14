@@ -68,8 +68,18 @@ python3 robot/yolo_stream_service.py \
   --stream-url http://127.0.0.1:6500/video_feed \
   --yolo-root /home/jetson/yolov5-7.0 \
   --weights /home/jetson/Yolov5ptFile/yolov5s.pt \
-  --data /home/jetson/yolov5-7.0/data/coco128.yaml
+  --data /home/jetson/yolov5-7.0/data/coco128.yaml \
+  --preprocess enhance
 ```
+
+`--preprocess` 可选值：
+
+- `none`：不做预处理，默认值。
+- `enhance`：亮度/对比度增强 + 轻微锐化，推荐优先测试。
+- `lowlight`：暗光增强，适合室内偏暗画面。
+- `sharpen`：只做轻微锐化，适合画面虚焦但光线还可以的情况。
+
+预处理发生在小车 `8765` YOLO 服务内，所以 `/detect` 单次检测和 `/stream` 实时带框视频都会使用同一套处理后的帧。
 
 后端可通过这些环境变量切到远端 YOLO 服务：
 
@@ -79,3 +89,26 @@ export ICAR_VISION_HOST=192.168.137.173
 export ICAR_VISION_PORT=8765
 export ICAR_VISION_STREAM_URL=http://192.168.137.173:6500/video_feed
 ```
+
+## 后端烟雾/火灾模型
+
+如果没有时间训练 `person + smoke + fire` 合并模型，可以让小车继续运行原 YOLO 服务，后端单独加载烟雾/火灾模型。后端会从小车视频流取帧，每个视觉检测周期运行一次烟雾/火灾检测；检测到 `smoke` 或 `fire` 时写入视觉事件并触发 danger 告警。
+
+后端机器需要能运行 YOLOv5 推理依赖，例如 `torch`、`opencv-python`、`numpy`，并且能访问 YOLOv5 源码目录。
+
+示例环境变量：
+
+```bash
+export ICAR_HAZARD_VISION_ENABLED=true
+export ICAR_HAZARD_YOLO_ROOT=/path/to/yolov5-7.0
+export ICAR_HAZARD_WEIGHTS=/path/to/fire_smoke_best.pt
+export ICAR_HAZARD_DATA=/path/to/fire_smoke.yaml
+export ICAR_HAZARD_LABELS=smoke,fire
+export ICAR_HAZARD_CONF=0.25
+```
+
+这种模式下：
+
+- 小车 `8765` 服务负责原模型，例如 `person` 和普通物体检测。
+- Web 后端负责烟雾/火灾模型。
+- 后端烟雾/火灾检测只在旅游安防、看护检测、巡逻检测这类安防模式中触发。

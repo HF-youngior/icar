@@ -56,6 +56,7 @@ class StateHub:
         self.vision_control: dict[str, Any] = {
             "running": False,
             "targets": ["person"],
+            "mode": "normal",
             "source": "remote_yolo_stream" if config.vision.mode in {"auto", "remote"} else "camera_stream",
             "stream_url": default_stream_url,
             "updated_at": now_text(),
