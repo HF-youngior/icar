@@ -42,8 +42,8 @@ def dry_run_tool_call(tool_name: str, arguments: dict[str, Any]) -> dict[str, An
     if tool_name == "speak":
         mode = str(arguments.get("mode", "")).strip()
         preset_key = str(arguments.get("preset_key", "")).strip()
-        text = str(arguments.get("text", "")).strip()
         prepared = McpToolService.prepared_voices.get(preset_key, {})
+        text = str(prepared.get("text", "") if mode == "preset" else arguments.get("text", "")).strip()
         return {
             "ok": True,
             "dry_run": True,
@@ -220,7 +220,7 @@ def run_case(transcript: str) -> dict[str, Any]:
                 "RequestId": f"mock-tencent-{abs(hash(transcript))}",
                 "AudioDuration": 0,
             },
-            tool_definitions=McpToolService(None, None, None).tool_definitions(),  # type: ignore[arg-type]
+            tool_definitions=McpToolService(None, None, None, None).tool_definitions(),  # type: ignore[arg-type]
         )
     except Exception as exc:
         return {

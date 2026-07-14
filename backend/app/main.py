@@ -150,6 +150,8 @@ async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None) -> list[
 def _prepared_key_for_reply(reply: str) -> str:
     text = str(reply).strip()
     for key, voice_item in mcp_tools.prepared_voices.items():
+        if not voice_item.get("exposed_to_llm", False):
+            continue
         if text == voice_item.get("text"):
             return key
     return ""
@@ -296,7 +298,8 @@ async def car_reconnect() -> dict[str, Any]:
             last_error=None,
             last_command="reconnect",
         )
-        return {"ok": True, "adapter": adapter.name, "runtime": recovery}
+        prepared_voice_sync = await mcp_tools.sync_prepared_voices()
+        return {"ok": True, "adapter": adapter.name, "runtime": recovery, "prepared_voice_sync": prepared_voice_sync}
     except Exception as exc:
         logger.exception("car reconnect failed")
         detail = str(exc) or "car control port is not reachable"

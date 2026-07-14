@@ -6,6 +6,7 @@ from typing import Any
 
 from .adapters.base import CarAdapter
 from .car_runtime import CarRuntimeRecovery
+from .prepared_voice_assets import PreparedVoiceAssetService
 from .state import StateHub
 from .tts import TencentTtsService
 
@@ -17,11 +18,49 @@ class McpToolService:
     turn_pulse_ms = 260
     turn_interval_ms = 300
     command_interval_sec = 0.18
-    prepared_voices: dict[str, dict[str, str]] = {
-        "wake_ack": {"text": "我在", "description": "用户只是在呼唤小比时使用。"},
-        "unknown": {"text": "我不会", "description": "用户要求超出当前能力范围时使用。"},
-        "ok": {"text": "好的", "description": "已经收到用户请求时使用。"},
-        "done": {"text": "已完成", "description": "动作或任务完成后使用。"},
+    prepared_voices: dict[str, dict[str, Any]] = {
+        "wake_ack": {
+            "text": "我在的，老大",
+            "description": "用户只是在呼唤小比时使用。",
+            "filename": "wake_ack.wav",
+            "exposed_to_llm": True,
+        },
+        "unknown": {
+            "text": "小比不会",
+            "description": "用户要求超出当前能力范围时使用。",
+            "filename": "unknown.wav",
+            "exposed_to_llm": True,
+        },
+        "ok": {
+            "text": "好的",
+            "description": "已经收到用户请求时使用。",
+            "filename": "ok.wav",
+            "exposed_to_llm": True,
+        },
+        "done": {
+            "text": "小比完成了",
+            "description": "动作或任务完成后使用。",
+            "filename": "done.wav",
+            "exposed_to_llm": True,
+        },
+        "unreadable": {
+            "text": "小比没有听清",
+            "description": "当用户请求不能被理解时使用。",
+            "filename": "unreadable.wav",
+            "exposed_to_llm": True,
+        },
+        "low_battery": {
+            "text": "小比电量有点低",
+            "description": "小车或后端检测到低电量时主动播报。",
+            "filename": "low_battery.wav",
+            "exposed_to_llm": False,
+        },
+        "network_unstable": {
+            "text": "小比网络好像不太稳定",
+            "description": "连接腾讯云、DeepSeek 或小车通信失败时播报。",
+            "filename": "network_unstable.wav",
+            "exposed_to_llm": False,
+        },
     }
 
     def __init__(self, state: StateHub, adapter: CarAdapter, tts: TencentTtsService, runtime: CarRuntimeRecovery) -> None:
@@ -29,6 +68,7 @@ class McpToolService:
         self.adapter = adapter
         self.tts = tts
         self.runtime = runtime
+        self.prepared_voice_assets = PreparedVoiceAssetService(runtime, self.prepared_voices)
 
     def tool_definitions(self) -> list[dict[str, Any]]:
         return [
@@ -83,7 +123,7 @@ class McpToolService:
                     "covered by one of the prepared voices; use mode='tts' only when custom words are needed. "
                     "This tool should be used for verbal acknowledgements and spoken answers, not for buzzer cues."
                 ),
-                "prepared_voices": self.prepared_voices,
+                "prepared_voices": PreparedVoiceAssetService.llm_visible_voices(self.prepared_voices),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -94,7 +134,7 @@ class McpToolService:
                         },
                         "preset_key": {
                             "type": "string",
-                            "enum": list(self.prepared_voices.keys()),
+                            "enum": list(PreparedVoiceAssetService.llm_visible_voices(self.prepared_voices).keys()),
                             "description": "Required when mode is preset.",
                         },
                         "text": {
@@ -315,8 +355,10 @@ class McpToolService:
             voice = self.prepared_voices.get(normalized_preset_key)
             if not voice:
                 raise ValueError("preset_key must reference a prepared voice")
-            spoken_text = normalized_text or voice["text"]
-            playback = await self._play_voice(spoken_text)
+            if not voice.get("exposed_to_llm", False):
+                raise ValueError("preset_key is reserved for backend system use")
+            spoken_text = str(voice["text"])
+            playback = await self._play_prepared_voice(normalized_preset_key, spoken_text)
             await self.state.add_report(
                 title="Prepared voice played on car",
                 summary=f"Prepared voice played: {normalized_preset_key} / {spoken_text}",
@@ -468,6 +510,20 @@ class McpToolService:
         if self.adapter.name == "tcp":
             return await asyncio.to_thread(self.runtime.play_voice, text=text)
         return await self.adapter.auxiliary_control("voice", text=text, volume_percent=85)
+
+    async def _play_prepared_voice(self, preset_key: str, fallback_text: str) -> dict[str, Any]:
+        if self.adapter.name == "tcp":
+            playback = await asyncio.to_thread(self.prepared_voice_assets.play_prepared, preset_key)
+            if playback.get("ok"):
+                return playback
+        fallback = await self._play_voice(fallback_text)
+        fallback["prepared_voice_fallback"] = True
+        return fallback
+
+    async def sync_prepared_voices(self) -> dict[str, Any]:
+        if self.adapter.name != "tcp":
+            return {"ok": True, "skipped": True, "reason": "prepared voice sync only runs for tcp/ssh car adapter"}
+        return await asyncio.to_thread(self.prepared_voice_assets.ensure_synced)
 
     def _clamp_byte(self, value: Any) -> int:
         return max(0, min(255, int(value)))
