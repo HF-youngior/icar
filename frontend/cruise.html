@@ -37,6 +37,7 @@
               <p id="cruiseMapHint">当前位置从第一个途经点出发；保存 3 个以上途经点后即可规划巡航。</p>
             </div>
             <div class="cruise-toolbar">
+              <button class="neon-btn ghost" id="cruiseAddWaypointBtn">添加途经点</button>
               <button class="neon-btn ghost active" id="cruiseSelectBtn">选择/移动点</button>
               <button class="neon-btn ghost" id="cruiseObstacleBtn">障碍编辑</button>
               <button class="neon-btn ghost" id="cruiseClearObstaclesBtn">清空障碍</button>
@@ -65,6 +66,7 @@
               <label>速度<input id="cruiseSpeedInput" type="number" min="0.08" max="0.18" step="0.01" value="0.10" /></label>
               <label>前进脉冲<input id="cruiseForwardMsInput" type="number" min="120" max="1200" step="20" value="420" /></label>
               <label>转向脉冲<input id="cruiseTurnMsInput" type="number" min="120" max="1200" step="20" value="360" /></label>
+              <label>掉头脉冲<input id="cruiseTurnaroundMsInput" type="number" min="40" max="600" step="10" value="90" /></label>
               <label>90度转向次数<input id="cruiseTurnPulsesInput" type="number" min="1" max="20" step="1" value="10" /></label>
               <label>掉头次数<input id="cruiseTurnaroundPulsesInput" type="number" min="8" max="36" step="1" value="19" /></label>
               <label>网格步长<input id="cruiseStepMetersInput" type="number" min="0.05" max="1" step="0.05" value="0.25" /></label>

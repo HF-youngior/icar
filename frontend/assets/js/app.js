@@ -2677,6 +2677,10 @@ function cruiseTurnMs() {
   return Math.round(clampNumber($("cruiseTurnMsInput")?.value, 120, 1200, 360));
 }
 
+function cruiseTurnaroundMs() {
+  return Math.round(clampNumber($("cruiseTurnaroundMsInput")?.value, 40, 600, 90));
+}
+
 function cruiseTurnPulsesPerQuarter() {
   return Math.round(clampNumber($("cruiseTurnPulsesInput")?.value, 1, 20, 10));
 }
@@ -2773,6 +2777,30 @@ function cruiseHasObstacle(cell) {
 function cruiseWaypointAt(cell) {
   const key = cruiseCellKey(cell);
   return state.cruise.waypoints.find((point) => cruiseCellKey(point) === key) || null;
+}
+
+function syncCruiseWaypointNameInput() {
+  const input = $("cruiseWaypointNameInput");
+  if (!input) return;
+  const point = state.cruise.waypoints.find((item) => item.id === state.cruise.selectedWaypointId);
+  input.value = point?.name || "";
+  input.dataset.cruiseWaypointId = point?.id || "";
+}
+
+function createCruiseWaypointAtCell(cell, heading = state.cruise.pose.heading) {
+  const index = state.cruise.nextWaypointNumber++;
+  const point = {
+    id: `wp-${Date.now()}-${index}`,
+    name: `途经点 ${index}`,
+    x: cell.x,
+    y: cell.y,
+    heading: normalizeCruiseHeading(heading, 0),
+    color: state.cruise.colors[state.cruise.waypoints.length % state.cruise.colors.length],
+  };
+  state.cruise.waypoints.push(point);
+  state.cruise.selectedWaypointId = point.id;
+  syncCruiseWaypointNameInput();
+  return point;
 }
 
 function clearCruisePlan() {
@@ -2926,6 +2954,7 @@ function renderCruiseRoutes() {
 
 function selectCruiseWaypoint(id) {
   state.cruise.selectedWaypointId = id;
+  syncCruiseWaypointNameInput();
   const point = state.cruise.waypoints.find((item) => item.id === id);
   if (point) {
     const input = $("cruiseWaypointNameInput");
@@ -2948,6 +2977,7 @@ function saveCruiseWaypoint() {
   const existing = cruiseWaypointAt(pose);
   if (existing) {
     state.cruise.selectedWaypointId = existing.id;
+    syncCruiseWaypointNameInput();
     setCruiseStatus(`${existing.name} 已在当前位置。`);
     renderCruisePage();
     return;
@@ -2963,6 +2993,7 @@ function saveCruiseWaypoint() {
   };
   state.cruise.waypoints.push(point);
   state.cruise.selectedWaypointId = point.id;
+  syncCruiseWaypointNameInput();
   clearCruisePlan();
   setCruiseStatus(`已保存 ${point.name}。`);
   renderCruisePage();
@@ -2986,6 +3017,7 @@ function deleteCruiseWaypoint() {
   const [point] = state.cruise.waypoints.splice(index, 1);
   const next = state.cruise.waypoints[Math.min(index, state.cruise.waypoints.length - 1)];
   state.cruise.selectedWaypointId = next?.id || "";
+  syncCruiseWaypointNameInput();
   clearCruisePlan();
   setCruiseStatus(`已删除 ${point.name}。`);
   renderCruisePage();
@@ -2995,6 +3027,7 @@ function clearCruiseWaypoints() {
   state.cruise.waypoints = [];
   state.cruise.selectedWaypointId = "";
   state.cruise.nextWaypointNumber = 1;
+  syncCruiseWaypointNameInput();
   clearCruisePlan();
   setCruiseStatus("途经点已清空。");
   renderCruisePage();
@@ -3113,13 +3146,16 @@ async function sendCruiseManual(direction) {
     return;
   }
   const duration = direction === "forward" || direction === "backward" ? cruiseForwardMs() : cruiseTurnMs();
-  await postJson("/api/control/manual", {
+  const result = await sendCruiseManualRequestWithRetry({
     direction,
     speed: cruiseSpeed(),
     duration_ms: duration,
     precision: true,
     source: "cruise",
   });
+  if (result?.blocked) {
+    throw new Error(result.reason || result.message || "巡航被急停阻止");
+  }
   updateCruisePoseByDirection(direction);
   cruiseLog(`遥控 ${direction} · ${duration}ms`);
   if (!state.cruise.running) clearCruisePlan();
@@ -3131,7 +3167,7 @@ async function sendCruiseContinuousTurn(direction, totalMs) {
   cruiseLog(`连续${direction === "left" ? "左" : "右"}掉头 · ${Math.round(totalMs)}ms`);
   while (Date.now() - startedAt < totalMs) {
     await waitCruiseReady();
-    await postJson("/api/control/manual", {
+    const result = await sendCruiseManualRequestWithRetry({
       direction,
       speed: cruiseSpeed(),
       duration_ms: 0,
@@ -3139,6 +3175,7 @@ async function sendCruiseContinuousTurn(direction, totalMs) {
       precision: true,
       source: "cruise",
     });
+    if (result?.blocked) throw new Error(result.reason || result.message || "巡航被急停阻止");
     await waitCruise(220);
   }
   await sendStopNow(true);
@@ -3175,6 +3212,7 @@ function cruiseRoutePayload() {
       speed: cruiseSpeed(),
       forward_ms: cruiseForwardMs(),
       turn_ms: cruiseTurnMs(),
+      turnaround_ms: cruiseTurnaroundMs(),
       turn_pulses_per_90: cruiseTurnPulsesPerQuarter(),
       turnaround_pulses: cruiseTurnaroundPulses(),
       step_meters: cruiseStepMeters(),
@@ -3246,6 +3284,7 @@ function applyCruiseRoute(route) {
   })) : [];
   state.cruise.obstacles = Array.isArray(data.obstacles) ? data.obstacles.map(clampCruiseCell) : [];
   state.cruise.selectedWaypointId = state.cruise.waypoints[0]?.id || "";
+  syncCruiseWaypointNameInput();
   state.cruise.nextWaypointNumber = state.cruise.waypoints.length + 1;
   const settings = data.settings || {};
   const setValue = (id, value) => {
@@ -3255,6 +3294,7 @@ function applyCruiseRoute(route) {
   setValue("cruiseSpeedInput", settings.speed);
   setValue("cruiseForwardMsInput", settings.forward_ms);
   setValue("cruiseTurnMsInput", settings.turn_ms);
+  setValue("cruiseTurnaroundMsInput", settings.turnaround_ms);
   setValue("cruiseTurnPulsesInput", settings.turn_pulses_per_90);
   setValue("cruiseTurnaroundPulsesInput", settings.turnaround_pulses);
   setValue("cruiseStepMetersInput", settings.step_meters);
@@ -3332,6 +3372,34 @@ async function waitCruiseReady() {
   if (state.cruise.stopRequested) throw new Error("cruise stopped");
 }
 
+async function sendCruiseManualRequestWithRetry(payload, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const result = await postJson("/api/control/manual", payload);
+      if (result?.blocked) return result;
+      if (result?.ok === false && result?.transient) {
+        lastError = new Error(result.message || "巡航指令暂时失败");
+        if (attempt < attempts) {
+          await sleep(120 * attempt);
+          continue;
+        }
+        throw lastError;
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      const message = String(error.message || error);
+      if (!/(timeout|timed out|cancelled|connection|ECONN|transient)/i.test(message)) throw error;
+      if (attempt < attempts) {
+        await sleep(120 * attempt);
+        continue;
+      }
+    }
+  }
+  throw lastError || new Error("巡航指令发送失败");
+}
+
 async function executeCruiseCommand(command) {
   await waitCruiseReady();
   if (command.type === "move") {
@@ -3347,7 +3415,7 @@ async function executeCruiseCommand(command) {
   }
   if (command.type === "turnaround") {
     const direction = command.direction || "left";
-    await sendCruiseContinuousTurn(direction, cruiseTurnMs() * cruiseTurnaroundPulses());
+    await sendCruiseContinuousTurn(direction, cruiseTurnaroundMs() * cruiseTurnaroundPulses());
     state.cruise.pose.heading = cruiseHeadingQuarter(state.cruise.pose.heading + 2);
     cruiseLog("掉头完成");
     renderCruisePage();
@@ -3423,10 +3491,101 @@ async function stopCruiseExecution() {
   renderCruisePage();
 }
 
+function handleCruiseCanvasClickImproved(event) {
+  const cell = cruiseCanvasToCell(event);
+  if (!cell) return;
+  const key = cruiseCellKey(cell);
+
+  if (state.cruise.selectedMode === "obstacle") {
+    const index = state.cruise.obstacles.findIndex((item) => cruiseCellKey(item) === key);
+    if (index >= 0) state.cruise.obstacles.splice(index, 1);
+    else if (!cruiseWaypointAt(cell)) state.cruise.obstacles.push(cell);
+    clearCruisePlan();
+    renderCruisePage();
+    return;
+  }
+
+  if (state.cruise.selectedMode === "waypoint") {
+    if (cruiseHasObstacle(cell)) {
+      setCruiseStatus("当前位置是障碍格，不能添加途经点。");
+      return;
+    }
+    const existing = cruiseWaypointAt(cell);
+    if (existing) {
+      selectCruiseWaypoint(existing.id);
+      return;
+    }
+    const point = createCruiseWaypointAtCell(cell);
+    clearCruisePlan();
+    setCruiseStatus(`已添加${point.name}，可继续点击地图添加下一个点。`);
+    renderCruisePage();
+    return;
+  }
+
+  const clicked = cruiseWaypointAt(cell);
+  if (clicked) {
+    selectCruiseWaypoint(clicked.id);
+    return;
+  }
+
+  const selected = state.cruise.waypoints.find((point) => point.id === state.cruise.selectedWaypointId);
+  if (selected && !cruiseHasObstacle(cell)) {
+    selected.x = cell.x;
+    selected.y = cell.y;
+    clearCruisePlan();
+    setCruiseStatus(`已移动${selected.name}。`);
+  } else if (!cruiseHasObstacle(cell)) {
+    state.cruise.pose = { ...state.cruise.pose, ...cell };
+    setCruiseStatus("已移动当前位置估计。");
+  }
+  renderCruisePage();
+}
+
+function setCruiseEditModeImproved(mode) {
+  const selectedMode = ["select", "waypoint", "obstacle"].includes(mode) ? mode : "select";
+  state.cruise.selectedMode = selectedMode;
+  $("cruiseSelectBtn")?.classList.toggle("active", selectedMode === "select");
+  $("cruiseAddWaypointBtn")?.classList.toggle("active", selectedMode === "waypoint");
+  $("cruiseObstacleBtn")?.classList.toggle("active", selectedMode === "obstacle");
+  if (selectedMode === "waypoint") {
+    setCruiseStatus("添加途经点模式：点击地图空白格即可新增点。");
+  } else if (selectedMode === "obstacle") {
+    setCruiseStatus("障碍编辑模式：点击网格添加或取消障碍。");
+  } else {
+    setCruiseStatus("选择/移动模式：点击已有点可选中，点击空白格可移动当前选中点。");
+  }
+}
+
+function renameSelectedCruiseWaypointImproved() {
+  const index = selectedCruiseWaypointIndex();
+  if (index < 0) {
+    setCruiseStatus("请先选择一个途经点。");
+    return;
+  }
+  const input = $("cruiseWaypointNameInput");
+  const selectedId = state.cruise.selectedWaypointId;
+  if (input?.dataset.cruiseWaypointId && input.dataset.cruiseWaypointId !== selectedId) {
+    syncCruiseWaypointNameInput();
+    setCruiseStatus("名称输入框已重新同步，请确认后再点击修改名称。");
+    return;
+  }
+  const name = (input?.value || "").trim();
+  if (!name) {
+    setCruiseStatus("请输入途经点名称。");
+    return;
+  }
+  state.cruise.waypoints[index].name = name.slice(0, 24);
+  syncCruiseWaypointNameInput();
+  clearCruisePlan();
+  setCruiseStatus(`已修改为 ${state.cruise.waypoints[index].name}。`);
+  renderCruisePage();
+}
+
 function bindCruiseEvents() {
-  $("cruiseCanvas")?.addEventListener("click", handleCruiseCanvasClick);
-  $("cruiseSelectBtn")?.addEventListener("click", () => setCruiseEditMode("select"));
-  $("cruiseObstacleBtn")?.addEventListener("click", () => setCruiseEditMode("obstacle"));
+  $("cruiseCanvas")?.addEventListener("click", handleCruiseCanvasClickImproved);
+  $("cruiseSelectBtn")?.addEventListener("click", () => setCruiseEditModeImproved("select"));
+  $("cruiseAddWaypointBtn")?.addEventListener("click", () => setCruiseEditModeImproved("waypoint"));
+  $("cruiseObstacleBtn")?.addEventListener("click", () => setCruiseEditModeImproved("obstacle"));
   $("cruiseClearObstaclesBtn")?.addEventListener("click", () => {
     state.cruise.obstacles = [];
     clearCruisePlan();
@@ -3435,7 +3594,10 @@ function bindCruiseEvents() {
   });
   $("cruiseResetPoseBtn")?.addEventListener("click", resetCruisePose);
   $("cruiseSaveWaypointBtn")?.addEventListener("click", saveCruiseWaypoint);
-  $("cruiseRenameWaypointBtn")?.addEventListener("click", renameSelectedCruiseWaypoint);
+  $("cruiseRenameWaypointBtn")?.addEventListener("click", renameSelectedCruiseWaypointImproved);
+  $("cruiseWaypointNameInput")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") event.preventDefault();
+  });
   $("cruiseMovePointUpBtn")?.addEventListener("click", () => moveCruiseWaypoint(-1));
   $("cruiseMovePointDownBtn")?.addEventListener("click", () => moveCruiseWaypoint(1));
   $("cruiseDeletePointBtn")?.addEventListener("click", deleteCruiseWaypoint);
@@ -3472,7 +3634,7 @@ function bindCruiseEvents() {
       });
     });
   });
-  ["cruiseTurnPenaltyInput", "cruiseStepMetersInput", "cruiseTurnPulsesInput", "cruiseTurnaroundPulsesInput"].forEach((id) => {
+  ["cruiseTurnPenaltyInput", "cruiseStepMetersInput", "cruiseTurnPulsesInput", "cruiseTurnaroundMsInput", "cruiseTurnaroundPulsesInput"].forEach((id) => {
     $(id)?.addEventListener("change", () => {
       clearCruisePlan();
       renderCruisePage();
@@ -3481,7 +3643,7 @@ function bindCruiseEvents() {
   ["cruiseGridWidthInput", "cruiseGridHeightInput"].forEach((id) => {
     $(id)?.addEventListener("change", applyCruiseGridSize);
   });
-  setCruiseEditMode("select");
+  setCruiseEditModeImproved("select");
   loadCruiseRoutes().catch((error) => console.warn("load cruise routes failed", error));
   renderCruisePage();
 }

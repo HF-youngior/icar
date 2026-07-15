@@ -5,7 +5,7 @@ from typing import Any
 
 from tests import BACKEND  # noqa: F401
 
-from app.voice import VoicePipeline
+from app.voice import SHORT_VOICE_MOVE_METERS, VoicePipeline, normalize_voice_tool_arguments
 
 
 class EmptyAsrVoicePipeline(VoicePipeline):
@@ -50,6 +50,25 @@ class VoicePipelineTest(unittest.TestCase):
         self.assertTrue(result["asr_empty"])
         self.assertEqual(result["llm_input"], "")
         self.assertFalse(result["llm_enabled"])
+
+    def test_bare_backward_voice_command_is_normalized_to_one_second_pulse(self) -> None:
+        normalized = normalize_voice_tool_arguments(
+            "move_distance",
+            {"direction": "backward", "meters": 1},
+            "后退",
+        )
+
+        self.assertEqual(normalized["direction"], "backward")
+        self.assertEqual(normalized["meters"], SHORT_VOICE_MOVE_METERS)
+
+    def test_explicit_distance_voice_command_is_not_overridden(self) -> None:
+        normalized = normalize_voice_tool_arguments(
+            "move_distance",
+            {"direction": "backward", "meters": 1},
+            "后退一米",
+        )
+
+        self.assertEqual(normalized["meters"], 1)
 
 
 if __name__ == "__main__":

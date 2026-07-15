@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -31,6 +32,49 @@ def _parse_env_map(raw_value: str) -> dict[str, str]:
         if source and target:
             pairs[source] = target
     return pairs
+
+
+SHORT_VOICE_MOVE_METERS = 0.2
+_VOICE_MOVE_PREFIXES = ("请", "麻烦", "帮我", "给我", "你", "你就", "先", "稍微", "稍稍")
+_VOICE_MOVE_SUFFIXES = ("一下子", "一点点", "一下", "一点", "吧", "呀", "啊", "呢")
+_VOICE_FORWARD_PHRASES = {"前进", "往前", "向前"}
+_VOICE_BACKWARD_PHRASES = {"后退", "往后", "向后", "退后"}
+
+
+def _compact_voice_command_text(command_text: str) -> str:
+    text = re.sub(r"[\s,，。.!！？、:：;；\"'`~（）()\[\]{}<>《》]+", "", str(command_text or ""))
+    changed = True
+    while changed and text:
+        changed = False
+        for prefix in _VOICE_MOVE_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                changed = True
+        for suffix in _VOICE_MOVE_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                changed = True
+    return text
+
+
+def short_voice_move_meters(command_text: str, direction: str) -> float | None:
+    compact = _compact_voice_command_text(command_text)
+    direction = str(direction or "").strip().lower()
+    if direction == "forward" and compact in _VOICE_FORWARD_PHRASES:
+        return SHORT_VOICE_MOVE_METERS
+    if direction == "backward" and compact in _VOICE_BACKWARD_PHRASES:
+        return SHORT_VOICE_MOVE_METERS
+    return None
+
+
+def normalize_voice_tool_arguments(tool_name: str, arguments: dict[str, Any], command_text: str) -> dict[str, Any]:
+    if str(tool_name or "").strip() != "move_distance":
+        return arguments
+    normalized = dict(arguments)
+    short_meters = short_voice_move_meters(command_text, normalized.get("direction", ""))
+    if short_meters is not None:
+        normalized["meters"] = short_meters
+    return normalized
 
 
 @dataclass
@@ -266,6 +310,7 @@ class VoicePipeline:
             "8. 如果用户提出家居陪伴机器人定位内的非命令型请求，例如讲笑话、简单聊天、问时间或天气，可以直接用自然语言回复；不要调用不存在的搜索、天气或时间工具，也不要假装已经联网查询实时信息。\n"
             "9. 如果用户提出命令型请求但没有对应 MCP，例如开空调、开灯、去未提供的地点、复杂避障，优先使用 prepared voice unknown，reply 写“我不会”，intent_summary 写“能力外命令”。\n"
             "10. 如果用户说“前进两米”“往前两米”“向前两米”，应理解为 move_distance(direction='forward', meters=2)。如果用户说“后退一米”，应理解为 move_distance(direction='backward', meters=1)。\n"
+            "10a. 如果用户只说“前进”“前进一下”“往前一点”“后退”“后退一下”“往后一点”这类没有明确距离的短口令，应理解为 move_distance 的 0.2 米，也就是按 0.2m/s 执行约 1 秒。\n"
             "11. 如果用户说“左转九十度”“向右转180度”，应理解为 turn_degrees(direction='left'|'right', degrees=90|180)。只有角度明确且可按 90 度步进时才执行；“转一下”“随便转”这类模糊命令不要执行。\n"
             "12. reply 要符合“小比”的角色气质：像一只比格一样活泼、利落、靠谱；但不要太长，不要一次说很多句。\n"
             "示例1:\n"

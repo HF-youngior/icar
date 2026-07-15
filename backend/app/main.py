@@ -30,7 +30,7 @@ from .slam_runtime import SlamRuntimeManager
 from .state import StateHub
 from .tts import TencentTtsService
 from .vision import VisionService
-from .voice import VoicePipeline
+from .voice import VoicePipeline, normalize_voice_tool_arguments
 from .voice_records import VoiceInteractionStore
 
 
@@ -124,7 +124,7 @@ def _normalize_cruise_route_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None) -> list[dict[str, Any]]:
+async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None, command_text: str = "") -> list[dict[str, Any]]:
     if not isinstance(parsed_output, dict):
         return []
 
@@ -146,6 +146,8 @@ async def maybe_execute_llm_tools(parsed_output: dict[str, Any] | None) -> list[
         arguments = call.get("arguments") or {}
         if not tool_name:
             continue
+        if isinstance(arguments, dict):
+            arguments = normalize_voice_tool_arguments(tool_name, arguments, command_text)
         results.append(await execute_mcp_tool_call(tool_name, arguments))
     return results
 
@@ -571,6 +573,22 @@ async def manual_control(payload: dict[str, Any]) -> dict[str, Any]:
                 mode="manual_hold",
                 speed=speed,
                 last_command=f"{direction}_hold_retry",
+                last_error=message,
+            )
+            return {
+                "ok": False,
+                "transient": True,
+                "direction": direction,
+                "message": message,
+            }
+        if source == "cruise" and direction != "stop":
+            message = str(exc) or exc.__class__.__name__
+            logger.warning("cruise manual pulse timed out: direction=%s speed=%s error=%s", direction, speed, message)
+            await state.update_robot(
+                connected=True,
+                mode="standby",
+                speed=0,
+                last_command=f"{direction}_cruise_retry",
                 last_error=message,
             )
             return {
@@ -1192,7 +1210,10 @@ async def voice_process(request: Request) -> dict[str, Any]:
         if result.get("asr_empty"):
             result["llm_output"] = "我没听清，请再说一遍。"
         elif result.get("wake_phrase_matched") and result.get("llm_parsed_output"):
-            tool_executions = await maybe_execute_llm_tools(result.get("llm_parsed_output"))
+            tool_executions = await maybe_execute_llm_tools(
+                result.get("llm_parsed_output"),
+                result.get("command_text", ""),
+            )
             fallback_voice = await ensure_voice_reply(result.get("llm_parsed_output"), tool_executions)
             if fallback_voice:
                 tool_executions.append(fallback_voice)
