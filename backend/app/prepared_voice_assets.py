@@ -201,42 +201,120 @@ class PreparedVoiceAssetService:
         remote_path = f"{self.remote_dir}/{filename}"
         codec = self._codec()
         volume = max(0, min(100, int(volume_percent)))
+        alsa_device = os.getenv("ICAR_VOICE_ALSA_DEVICE", "").strip()
         script = f"""
 export ICAR_VOICE_FILE={shlex.quote(remote_path)}
 export ICAR_VOICE_CODEC={shlex.quote(codec)}
 export ICAR_VOICE_VOLUME={volume}
+export ICAR_VOICE_ALSA_DEVICE={shlex.quote(alsa_device)}
 if [ ! -f "$ICAR_VOICE_FILE" ]; then
   echo '{{"ok": false, "engine": "prepared-voice", "error": "prepared voice file missing"}}'
   exit 3
 fi
-if command -v amixer >/dev/null 2>&1; then
-  amixer set Master "$ICAR_VOICE_VOLUME%" unmute >/tmp/icar_voice_volume.log 2>&1 || true
-  amixer set PCM "$ICAR_VOICE_VOLUME%" unmute >>/tmp/icar_voice_volume.log 2>&1 || true
-  amixer set Speaker "$ICAR_VOICE_VOLUME%" unmute >>/tmp/icar_voice_volume.log 2>&1 || true
-fi
+
+export ICAR_VOICE_PLAYER=""
+export ICAR_VOICE_DEVICE=""
+
+prepare_audio_output() {{
+  : > /tmp/icar_voice_volume.log
+  if command -v amixer >/dev/null 2>&1; then
+    for control in Master PCM Speaker Headphone Front Playback Line DAC Digital; do
+      amixer set "$control" "$ICAR_VOICE_VOLUME%" unmute >>/tmp/icar_voice_volume.log 2>&1 || true
+    done
+    for card in 0 1 2 3; do
+      for control in Master PCM Speaker Headphone Front Playback Line DAC Digital; do
+        amixer -c "$card" set "$control" "$ICAR_VOICE_VOLUME%" unmute >>/tmp/icar_voice_volume.log 2>&1 || true
+      done
+    done
+  fi
+  if command -v pactl >/dev/null 2>&1; then
+    pactl set-sink-mute @DEFAULT_SINK@ 0 >/tmp/icar_voice_pulse.log 2>&1 || true
+    pactl set-sink-volume @DEFAULT_SINK@ "$ICAR_VOICE_VOLUME%" >>/tmp/icar_voice_pulse.log 2>&1 || true
+  fi
+}}
+
+try_aplay_device() {{
+  device="$1"
+  echo "trying aplay -D $device" >>/tmp/icar_prepared_voice.log
+  if aplay -q -D "$device" "$ICAR_VOICE_FILE" >>/tmp/icar_prepared_voice.log 2>&1; then
+    ICAR_VOICE_PLAYER="aplay"
+    ICAR_VOICE_DEVICE="$device"
+    return 0
+  fi
+  return 1
+}}
+
+play_wav_with_aplay() {{
+  : > /tmp/icar_prepared_voice.log
+  if [ -n "$ICAR_VOICE_ALSA_DEVICE" ] && try_aplay_device "$ICAR_VOICE_ALSA_DEVICE"; then
+    return 0
+  fi
+  for device in plughw:1,0 plughw:2,0 plughw:3,0 plughw:0,0 plughw:1,1 plughw:2,1 plughw:3,1 plughw:0,1 default hw:1,0 hw:2,0 hw:3,0 hw:0,0; do
+    if try_aplay_device "$device"; then
+      return 0
+    fi
+  done
+  return 1
+}}
+
+prepare_audio_output
+code=127
 if [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v aplay >/dev/null 2>&1; then
-  aplay -q "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
+  play_wav_with_aplay
   code=$?
-elif [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v paplay >/dev/null 2>&1; then
+fi
+if [ "$code" != "0" ] && [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v paplay >/dev/null 2>&1; then
+  ICAR_VOICE_PLAYER="paplay"
+  ICAR_VOICE_DEVICE="pulse-default"
   paplay "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
-elif [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v pw-play >/dev/null 2>&1; then
+fi
+if [ "$code" != "0" ] && [ "$ICAR_VOICE_CODEC" = "wav" ] && command -v pw-play >/dev/null 2>&1; then
+  ICAR_VOICE_PLAYER="pw-play"
+  ICAR_VOICE_DEVICE="pipewire-default"
   pw-play "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
-elif [ "$ICAR_VOICE_CODEC" = "mp3" ] && command -v mpg123 >/dev/null 2>&1; then
+fi
+if [ "$code" != "0" ] && [ "$ICAR_VOICE_CODEC" = "mp3" ] && command -v mpg123 >/dev/null 2>&1; then
+  ICAR_VOICE_PLAYER="mpg123"
+  ICAR_VOICE_DEVICE="default"
   mpg123 -q "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
-elif command -v ffplay >/dev/null 2>&1; then
+fi
+if [ "$code" != "0" ] && command -v ffplay >/dev/null 2>&1; then
+  ICAR_VOICE_PLAYER="ffplay"
+  ICAR_VOICE_DEVICE="default"
   ffplay -nodisp -autoexit -loglevel quiet "$ICAR_VOICE_FILE" >/tmp/icar_prepared_voice.log 2>&1
   code=$?
-else
+fi
+if [ "$code" = "127" ]; then
   echo '{{"ok": false, "engine": "prepared-voice", "error": "No audio player found on car."}}'
   exit 2
 fi
 if [ "$code" = "0" ]; then
-  echo '{{"ok": true, "spoken": true, "engine": "prepared-voice"}}'
+  python3 - <<'PY'
+import json
+import os
+print(json.dumps({{
+    "ok": True,
+    "spoken": True,
+    "engine": "prepared-voice",
+    "player": os.environ.get("ICAR_VOICE_PLAYER", ""),
+    "device": os.environ.get("ICAR_VOICE_DEVICE", ""),
+}}, ensure_ascii=False))
+PY
 else
-  echo '{{"ok": false, "engine": "prepared-voice", "error": "audio player failed"}}'
+  python3 - <<'PY'
+import json
+import os
+print(json.dumps({{
+    "ok": False,
+    "engine": "prepared-voice",
+    "error": "audio player failed",
+    "player": os.environ.get("ICAR_VOICE_PLAYER", ""),
+    "device": os.environ.get("ICAR_VOICE_DEVICE", ""),
+}}, ensure_ascii=False))
+PY
 fi
 exit "$code"
 """
@@ -250,6 +328,8 @@ exit "$code"
             "remote_path": remote_path,
             "spoken": bool(parsed.get("spoken", False)),
             "engine": parsed.get("engine", "prepared-voice"),
+            "player": parsed.get("player", ""),
+            "device": parsed.get("device", ""),
             "message": parsed.get("message") or parsed.get("error") or "",
             "stdout": result.get("stdout", "")[-1600:],
             "stderr": result.get("stderr", "")[-1200:],

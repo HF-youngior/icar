@@ -17,7 +17,9 @@ class McpToolService:
     turn_degrees_per_pulse = 90
     turn_pulse_ms = 260
     turn_interval_ms = 300
-    command_interval_sec = 0.18
+    command_interval_sec = 0.30
+    movement_start_retry_sec = 4.5
+    movement_retry_interval_sec = 0.08
     prepared_voices: dict[str, dict[str, Any]] = {
         "wake_ack": {
             "text": "我在的，老大",
@@ -232,7 +234,11 @@ class McpToolService:
             raise ValueError("meters is too large for a single tool call")
 
         duration_sec = meters / self.fixed_speed_mps
-        started_at = time.monotonic()
+        requested_at = time.monotonic()
+        movement_started_at: float | None = None
+        sent_count = 0
+        transient_errors: list[str] = []
+        stop_result: dict[str, Any] | None = None
 
         await self.state.update_robot(
             connected=True,
@@ -245,15 +251,70 @@ class McpToolService:
 
         try:
             while True:
-                elapsed = time.monotonic() - started_at
-                if elapsed >= duration_sec:
+                now = time.monotonic()
+                if movement_started_at is not None:
+                    elapsed = now - movement_started_at
+                    if elapsed >= duration_sec:
+                        break
+                elif now - requested_at >= self.movement_start_retry_sec:
                     break
-                await self.adapter.manual_control(direction, self.fixed_speed_mps)
-                await asyncio.sleep(min(self.command_interval_sec, max(0.01, duration_sec - elapsed)))
-            await self.adapter.stop()
+
+                try:
+                    await self.adapter.manual_control(direction, self.fixed_speed_mps)
+                    sent_count += 1
+                    if movement_started_at is None:
+                        movement_started_at = time.monotonic()
+                    remaining = duration_sec - (time.monotonic() - movement_started_at)
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(self.command_interval_sec, max(0.01, remaining)))
+                except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
+                    transient_errors.append(str(exc) or exc.__class__.__name__)
+                    await asyncio.sleep(self.movement_retry_interval_sec)
+
+            if sent_count > 0:
+                try:
+                    stop_result = await self.adapter.stop()
+                except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
+                    transient_errors.append(f"stop:{str(exc) or exc.__class__.__name__}")
         except Exception:
             await self.state.update_robot(speed=0, mode="offline")
             raise
+
+        if sent_count <= 0:
+            message = transient_errors[-1] if transient_errors else "no movement frame was sent"
+            await self.state.update_robot(
+                speed=0,
+                mode="standby",
+                target=None,
+                last_command=f"move_distance:{direction}:not_sent",
+                last_error=message,
+            )
+            await self.state.add_report(
+                title=f"绉诲姩宸ュ叿 {direction}",
+                summary="Move tool did not send a motion frame before the retry window ended.",
+                details={
+                    "tool": "move_distance",
+                    "direction": direction,
+                    "meters": meters,
+                    "speed_mps": self.fixed_speed_mps,
+                    "duration_sec": round(duration_sec, 3),
+                    "sent_count": sent_count,
+                    "errors": transient_errors[-5:],
+                },
+            )
+            return {
+                "ok": False,
+                "tool": "move_distance",
+                "direction": direction,
+                "meters": meters,
+                "speed_mps": self.fixed_speed_mps,
+                "duration_sec": round(duration_sec, 3),
+                "sent_count": sent_count,
+                "transient": True,
+                "message": message,
+                "errors": transient_errors[-5:],
+            }
 
         await self.state.update_robot(
             speed=0,
@@ -270,6 +331,9 @@ class McpToolService:
                 "meters": meters,
                 "speed_mps": self.fixed_speed_mps,
                 "duration_sec": round(duration_sec, 3),
+                "sent_count": sent_count,
+                "errors": transient_errors[-5:],
+                "stop": stop_result,
             },
         )
         return {
@@ -279,6 +343,9 @@ class McpToolService:
             "meters": meters,
             "speed_mps": self.fixed_speed_mps,
             "duration_sec": round(duration_sec, 3),
+            "sent_count": sent_count,
+            "errors": transient_errors[-5:],
+            "stop": stop_result,
         }
 
     async def turn_degrees(self, direction: str, degrees: int) -> dict[str, Any]:

@@ -110,6 +110,24 @@ function Test-TcpPortFast {
     }
 }
 
+function Show-RemoteBridgeDiagnostics {
+    $DiagScript = @(
+        "echo '--- process ---'",
+        "pgrep -af '[i]car_rosmaster_tcp_bridge.py' || true",
+        "echo '--- listening:$Port ---'",
+        "(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true) | grep ':$Port ' || true",
+        "echo '--- log:/tmp/icar_rosmaster_tcp_bridge.log ---'",
+        "tail -n 120 /tmp/icar_rosmaster_tcp_bridge.log 2>/dev/null || true"
+    ) -join "; "
+
+    Write-Host ""
+    Write-Host "Remote bridge diagnostics:" -ForegroundColor Yellow
+    & $SshExecutable @(@($SshOptions) + @($Target, "bash -lc $(Quote-Bash($DiagScript))"))
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Remote diagnostics command exited with code $LASTEXITCODE" -ForegroundColor Yellow
+    }
+}
+
 if (-not (Test-Path $BridgeFile)) {
     throw "Bridge file not found: $BridgeFile"
 }
@@ -149,6 +167,7 @@ if (-not $SkipPortCheck) {
         Write-Host "Port check failed: ${CarHost}:${Port}" -ForegroundColor Yellow
         Write-Host "Inspect logs with:" -ForegroundColor Yellow
         Write-Host "ssh $Target `"tail -n 80 /tmp/icar_rosmaster_tcp_bridge.log`"" -ForegroundColor Yellow
+        Show-RemoteBridgeDiagnostics
     }
 }
 
